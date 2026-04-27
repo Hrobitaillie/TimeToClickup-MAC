@@ -5,3 +5,5 @@ DerivedData/
 .DS_Store
 Package.resolved
 dist/
+# Generated from assets/icon-source.png by build_app.sh
+assets/AppIcon.icns

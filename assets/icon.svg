@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Multi-stop gradient sweeping from pink → purple along the body -->
+    <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#FF3B7C"/>
+      <stop offset="22%" stop-color="#FF7A36"/>
+      <stop offset="46%" stop-color="#FFB347"/>
+      <stop offset="72%" stop-color="#3F86F0"/>
+      <stop offset="100%" stop-color="#8B3FE7"/>
+    </linearGradient>
+    <linearGradient id="capGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FF3B7C"/>
+      <stop offset="100%" stop-color="#FF7A36"/>
+    </linearGradient>
+    <linearGradient id="sideGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFB347"/>
+      <stop offset="100%" stop-color="#FF7A36"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Stopwatch body -->
+  <circle cx="512" cy="600" r="320" fill="url(#ringGrad)"/>
+
+  <!-- Crown (top knob + neck) -->
+  <rect x="450" y="160" width="124" height="70" rx="14" fill="url(#capGrad)"/>
+  <path d="M412 232 L612 232 L592 312 L432 312 Z" fill="url(#capGrad)"/>
+
+  <!-- Side button (upper right) -->
+  <rect x="744" y="262" width="80" height="50" rx="14"
+        transform="rotate(35 784 287)" fill="url(#sideGrad)"/>
+
+  <!-- Inner white dial -->
+  <circle cx="512" cy="600" r="220" fill="#FFFFFF"/>
+
+  <!-- Tick marks at 12 / 3 / 6 / 9 -->
+  <rect x="500" y="404" width="24" height="44" rx="6" fill="#FF3B7C"/>
+  <rect x="704" y="588" width="44" height="24" rx="6" fill="#3F86F0"/>
+  <rect x="500" y="752" width="24" height="44" rx="6" fill="#8B3FE7"/>
+  <rect x="276" y="588" width="44" height="24" rx="6" fill="#FFB347"/>
+
+  <!-- Clock hands -->
+  <line x1="512" y1="600" x2="512" y2="466" stroke="#FF3B7C"
+        stroke-width="22" stroke-linecap="round"/>
+  <line x1="512" y1="600" x2="640" y2="640" stroke="#FF3B7C"
+        stroke-width="22" stroke-linecap="round"/>
+  <circle cx="512" cy="600" r="22" fill="#FF3B7C"/>
+</svg>
