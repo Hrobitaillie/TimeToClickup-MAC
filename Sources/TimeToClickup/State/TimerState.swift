@@ -113,7 +113,9 @@ final class TimerState: ObservableObject {
         Task { await syncFromServer() }
         syncTimer?.invalidate()
         let t = Timer(timeInterval: syncInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.syncFromServer() }
+            Task { @MainActor [weak self] in
+                await self?.syncFromServer()
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         syncTimer = t
@@ -209,7 +211,7 @@ final class TimerState: ObservableObject {
     private func scheduleTick() {
         ticker?.invalidate()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, let startedAt = self.startedAt else { return }
                 self.elapsedTime = Date().timeIntervalSince(startedAt)
             }
