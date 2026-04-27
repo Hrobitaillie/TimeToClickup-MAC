@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Show toolchain
+        run: |
+          xcode-select -p
+          swift --version
+
+      - name: Build .app
+        env:
+          APP_VERSION: ${{ steps.version.outputs.value }}
+          APP_BUILD: ${{ github.run_number }}
+        run: |
+          chmod +x build_app.sh
+          ./build_app.sh
+
+      - name: Package zip
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent \
+            .build/release/TimeToClickup.app \
+            dist/TimeToClickup-v${{ steps.version.outputs.value }}.zip
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TimeToClickup-v*.zip
+          generate_release_notes: true
+          name: TimeToClickup v${{ steps.version.outputs.value }}
+          body: |
+            ### Installation
+            1. Download the `.zip` below and unzip
+            2. Drop `TimeToClickup.app` into `/Applications`
+            3. First launch: right-click → **Open** to bypass Gatekeeper (the app is unsigned)
+            4. Open the menu-bar icon → **Settings…** → paste your ClickUp Personal API token
+
+            Requires macOS 14 (Sonoma) or later.
