@@ -110,7 +110,7 @@ struct OverlayView: View {
 
                 Spacer(minLength: 0)
 
-                if timer.currentTask != nil {
+                if timer.isRunning {
                     descriptionButton
                         .transition(.asymmetric(
                             insertion: .scale(scale: 0.6)
