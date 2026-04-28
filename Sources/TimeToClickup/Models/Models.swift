@@ -105,6 +105,15 @@ struct ClickUpList: Identifiable, Hashable {
     let name: String
 }
 
+/// Flattened list reference used by the search filter picker:
+/// the list itself plus the "Space › Folder" path so the user can
+/// disambiguate same-named lists across the workspace.
+struct ClickUpFlatList: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let path: String
+}
+
 // MARK: - Time entries
 
 struct RunningEntry: Equatable {

@@ -11,24 +11,177 @@ struct TaskSearchView: View {
     @State private var fieldFocused = false
     @FocusState private var focused: Bool
 
+    @State private var pickingList = false
+    @State private var listPickerQuery = ""
+
     let onPick: (ClickUpTask) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            searchField
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 10)
+            VStack(spacing: 8) {
+                listFilterRow
+                searchField
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
             Divider().opacity(0.4)
-            content
-                .frame(height: 290)
+
+            ZStack {
+                if pickingList {
+                    listPickerSection
+                        .transition(.opacity)
+                } else {
+                    content
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxHeight: .infinity)
+
             footer
         }
-        .frame(width: 360)
+        .frame(width: 360, alignment: .top)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(.regularMaterial)
         .onAppear {
             focused = true
             clickup.preloadSearch()
+        }
+    }
+
+    // MARK: - List filter pill + inline picker
+
+    private var listFilterRow: some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    pickingList.toggle()
+                    if pickingList { listPickerQuery = "" }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: clickup.searchListFilter == nil
+                          ? "line.3.horizontal.decrease.circle"
+                          : "line.3.horizontal.decrease.circle.fill")
+                        .font(.system(size: 11))
+                    Text(clickup.searchListFilterDisplayName
+                         ?? "Toutes les listes")
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: pickingList ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(clickup.searchListFilter == nil
+                                 ? Color.secondary : Color.accentColor)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(
+                        clickup.searchListFilter == nil
+                            ? Color.secondary.opacity(0.10)
+                            : Color.accentColor.opacity(0.12)
+                    )
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        clickup.searchListFilter == nil
+                            ? Color.clear
+                            : Color.accentColor.opacity(0.4),
+                        lineWidth: 0.8
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+
+            if clickup.searchListFilter != nil {
+                Button {
+                    clickup.setSearchListFilter(nil)
+                    if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        scheduleSearch(query)
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Retirer le filtre de liste")
+            }
+
+            Spacer()
+        }
+    }
+
+    private var listPickerSection: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("Filtrer parmi tes listes…", text: $listPickerQuery)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider().opacity(0.3)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ListPickerRow(
+                        label: "Toutes les listes",
+                        path: nil,
+                        selected: clickup.searchListFilter == nil
+                    ) {
+                        clickup.setSearchListFilter(nil)
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            pickingList = false
+                        }
+                        if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                            scheduleSearch(query)
+                        }
+                    }
+                    Divider().opacity(0.2).padding(.leading, 36)
+
+                    if filteredFlatLists.isEmpty {
+                        Text(clickup.flatLists.isEmpty
+                             ? "Aucune liste chargée. Va dans Settings et clique « Recharger »."
+                             : "Aucune correspondance.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 24)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        ForEach(filteredFlatLists) { item in
+                            ListPickerRow(
+                                label: item.name,
+                                path: item.path,
+                                selected: clickup.searchListFilter == item.id
+                            ) {
+                                clickup.setSearchListFilter(item.id)
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    pickingList = false
+                                }
+                                if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                                    scheduleSearch(query)
+                                }
+                            }
+                            Divider().opacity(0.15).padding(.leading, 36)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var filteredFlatLists: [ClickUpFlatList] {
+        let q = listPickerQuery
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        if q.isEmpty { return clickup.flatLists }
+        return clickup.flatLists.filter {
+            $0.name.lowercased().contains(q)
+                || $0.path.lowercased().contains(q)
         }
     }
 
@@ -103,22 +256,53 @@ struct TaskSearchView: View {
         }
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: query.isEmpty
-                  ? "clock.arrow.circlepath" : "magnifyingglass")
-                .font(.system(size: 22, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text(query.isEmpty
-                 ? "Aucune tâche récente"
-                 : "Aucun résultat pour « \(query) »")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+        if !query.isEmpty, let listName = clickup.searchListFilterDisplayName {
+            // The list filter is the most likely reason for an empty
+            // search — surface a one-click escape hatch.
+            VStack(spacing: 10) {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.orange)
+                Text("Aucun résultat dans « \(listName) »")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text("Le filtre de liste exclut peut-être la tâche.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Button {
+                    clickup.setSearchListFilter(nil)
+                    if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        scheduleSearch(query)
+                    }
+                } label: {
+                    Label("Chercher dans toutes les listes",
+                          systemImage: "xmark.circle")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 32)
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: query.isEmpty
+                      ? "clock.arrow.circlepath" : "magnifyingglass")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text(query.isEmpty
+                     ? "Aucune tâche récente"
+                     : "Aucun résultat pour « \(query) »")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 44)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 44)
     }
 
     // MARK: - Footer
@@ -204,6 +388,54 @@ struct TaskSearchView: View {
                 self.loading = false
             }
         }
+    }
+}
+
+// MARK: - List picker row
+
+private struct ListPickerRow: View {
+    let label: String
+    let path: String?
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: selected
+                      ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                    .font(.system(size: 13))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.system(
+                            size: 12,
+                            weight: selected ? .semibold : .medium
+                        ))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let path {
+                        Text(path)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                hovering
+                    ? Color.accentColor.opacity(0.10)
+                    : Color.clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { hovering = $0 }
     }
 }
 

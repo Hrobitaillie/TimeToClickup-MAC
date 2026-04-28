@@ -7,7 +7,9 @@ import SwiftUI
 /// hover tracking area never changes — that's what kills the flicker.
 final class OverlayPanel: NSPanel {
 
-    static let panelSize = NSSize(width: 360, height: 56)
+    /// 80pt tall (instead of just-fits) so the expanded pill's drop
+    /// shadow renders inside the panel. Otherwise NSPanel clips it.
+    static let panelSize = NSSize(width: 360, height: 80)
     static weak var current: OverlayPanel?
 
     init() {

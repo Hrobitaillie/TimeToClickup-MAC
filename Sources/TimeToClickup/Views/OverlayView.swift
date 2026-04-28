@@ -52,15 +52,10 @@ struct OverlayView: View {
         let h = expanded ? expandedHeight : compactHeight
 
         return ZStack {
-            // Background carries the shadow on its own layer so the
-            // .clipShape applied to the content (next layer) can't crop it.
+            // Background — material only, no drop shadow (the border
+            // and the glass material already give enough separation).
             pillShape
                 .fill(.ultraThinMaterial)
-                .shadow(
-                    color: .black.opacity(expanded ? 0.32 : 0.20),
-                    radius: expanded ? 18 : 9,
-                    y: expanded ? 7 : 4
-                )
 
             // Content — clipped to the pill so transitioning buttons
             // can't bleed outside the background mid-animation.

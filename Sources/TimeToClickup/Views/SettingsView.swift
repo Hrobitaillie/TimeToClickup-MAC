@@ -121,6 +121,21 @@ struct SettingsView: View {
                     scheduleTest(testQuery)
                 }
                 Spacer()
+                Button {
+                    Task { await clickup.dumpRawSearch(query: testQuery) }
+                } label: {
+                    Label("Dump réponse serveur", systemImage: "doc.text.magnifyingglass")
+                }
+                .controlSize(.small)
+                .disabled(testQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                Button {
+                    Task { await clickup.inspectTask(urlOrId: testQuery) }
+                } label: {
+                    Label("Inspecter (URL/ID)", systemImage: "info.circle")
+                }
+                .controlSize(.small)
+                .disabled(testQuery.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
             resultsView

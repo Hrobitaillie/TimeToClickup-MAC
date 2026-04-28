@@ -15,6 +15,10 @@ final class ClickUpService: ObservableObject {
     @Published private(set) var selectedSpaceIds: Set<String> = []
     @Published private(set) var selectedFolderIds: Set<String> = []
     @Published private(set) var selectedListIds: Set<String> = []
+    /// One specific list to scope the search to, picked from the
+    /// search popover. Persisted across sessions because users
+    /// usually stay on the same project all day.
+    @Published var searchListFilter: String?
 
     private let recentStore = RecentTasksStore()
     private var teamLoadTask: Task<Void, Never>?
@@ -24,6 +28,7 @@ final class ClickUpService: ObservableObject {
     private let selectedSpacesKey = "selected_space_ids"
     private let selectedFoldersKey = "selected_folder_ids"
     private let selectedListsKey = "selected_list_ids"
+    private let searchListFilterKey = "search_list_filter"
 
     private var apiToken: String? {
         KeychainHelper.shared.get(key: "clickup_api_token")
@@ -45,6 +50,48 @@ final class ClickUpService: ObservableObject {
         selectedListIds = Set(
             UserDefaults.standard.stringArray(forKey: selectedListsKey) ?? []
         )
+        searchListFilter = UserDefaults.standard.string(
+            forKey: searchListFilterKey
+        )
+    }
+
+    func setSearchListFilter(_ id: String?) {
+        searchListFilter = id
+        if let id, !id.isEmpty {
+            UserDefaults.standard.set(id, forKey: searchListFilterKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: searchListFilterKey)
+        }
+    }
+
+    /// Flat list of every list in the loaded workspace tree, sorted
+    /// by path then name — the source of truth for the search filter
+    /// picker.
+    var flatLists: [ClickUpFlatList] {
+        var out: [ClickUpFlatList] = []
+        for space in availableSpaces {
+            for folder in space.folders {
+                for list in folder.lists {
+                    out.append(ClickUpFlatList(
+                        id: list.id, name: list.name,
+                        path: "\(space.name) › \(folder.name)"
+                    ))
+                }
+            }
+            for list in space.folderlessLists {
+                out.append(ClickUpFlatList(
+                    id: list.id, name: list.name, path: space.name
+                ))
+            }
+        }
+        return out.sorted {
+            $0.path == $1.path ? $0.name < $1.name : $0.path < $1.path
+        }
+    }
+
+    var searchListFilterDisplayName: String? {
+        guard let id = searchListFilter else { return nil }
+        return flatLists.first(where: { $0.id == id })?.name
     }
 
     func reset() {
@@ -259,21 +306,6 @@ final class ClickUpService: ObservableObject {
         loadingTasks = true
         defer { loadingTasks = false }
 
-        // Don't put scope filters in the URL — ClickUp's `name` filter
-        // misbehaves when combined with `list_ids[]`/`space_ids[]` and
-        // drops deeply-nested subtasks. We do the scope check
-        // client-side on the response, which works at any depth
-        // because subtasks inherit the parent's list.id.
-        var components = URLComponents(
-            string: "https://api.clickup.com/api/v2/team/\(teamId)/task"
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "name", value: query),
-            URLQueryItem(name: "include_closed", value: "false"),
-            URLQueryItem(name: "subtasks", value: "true"),
-            URLQueryItem(name: "page", value: "0")
-        ]
-
         let useFilter = !ignoreWhitelist && hasAnySelection
         let scopeLabel = useFilter
             ? "filtre client : \(selectedSpaceIds.count) espace(s), " +
@@ -281,43 +313,284 @@ final class ClickUpService: ObservableObject {
               "\(selectedListIds.count) liste(s) directe(s)"
             : "SANS filtre"
         LogStore.shared.info("Recherche « \(query) » — \(scopeLabel)")
-        if let url = components.url?.absoluteString {
-            LogStore.shared.info("→ \(url)")
+
+        // When a single list is pinned, query that list directly. The
+        // team `name=` filter is unreliable (returns ~300 tasks of
+        // wildly varying relevance, and silently drops some matches
+        // beyond page 2). Going through `GET /list/{id}/task` lets us
+        // see every task in the scope and match locally.
+        if let listId = searchListFilter, !listId.isEmpty, !ignoreWhitelist {
+            return await fetchSearchResultsInList(
+                listId: listId, query: query
+            )
         }
 
+        var collected: [String: TasksResponse.RawTask] = [:]
         do {
-            let resp = try await fetchURL(
-                components.url!, as: TasksResponse.self
+            // Primary: full query, paginated up to 3 pages.
+            let primary = try await fetchTaskPages(
+                teamId: teamId, name: query, maxPages: 3, logURL: true
             )
-            LogStore.shared.info(
-                "← \(resp.tasks.count) tâche(s) reçue(s) du serveur"
-            )
-            for raw in resp.tasks.prefix(5) {
-                let path = raw.path.isEmpty ? "?" : raw.path
-                LogStore.shared.info("    · \(raw.name)  [\(path)]")
-            }
+            for t in primary { collected[t.id] = t }
+            LogStore.shared.info("← \(primary.count) tâche(s) via « \(query) »")
 
-            let filtered = useFilter
-                ? resp.tasks.filter { passesWhitelist($0) }
-                : resp.tasks
-            if useFilter {
+            // Fallback: when the query has multiple words / punctuation,
+            // ClickUp's substring `name=` filter sometimes drops exact
+            // matches (e.g. searching "AV - Solis" misses the task
+            // literally named that). Re-search using the longest word
+            // alone — that's almost always the most distinctive token —
+            // and merge results.
+            if let fallback = Self.fallbackQuery(for: query) {
+                let extra = try await fetchTaskPages(
+                    teamId: teamId, name: fallback, maxPages: 1, logURL: false
+                )
+                let added = extra.filter { collected[$0.id] == nil }.count
+                for t in extra where collected[t.id] == nil {
+                    collected[t.id] = t
+                }
                 LogStore.shared.info(
-                    "↳ \(filtered.count) après filtre whitelist"
+                    "↺ fallback « \(fallback) » : \(extra.count) tâche(s) (+\(added) nouvelles)"
                 )
             }
-            lastError = nil
-            return rankByRelevance(filtered, query: query)
         } catch {
-            if Self.isCancellation(error) {
-                // Don't log — cancellations are normal between keystrokes.
-            } else {
+            if !Self.isCancellation(error) {
                 LogStore.shared.error(
                     "Erreur recherche : \(error.localizedDescription)"
                 )
+                report("search", error)
             }
-            report("search", error)
             return []
         }
+        let all = Array(collected.values)
+
+        var filtered = useFilter
+            ? all.filter { passesWhitelist($0) }
+            : all
+        if useFilter {
+            LogStore.shared.info(
+                "↳ \(filtered.count) après filtre whitelist"
+            )
+        }
+
+        if let listId = searchListFilter, !listId.isEmpty {
+            filtered = filtered.filter { $0.list?.id == listId }
+            let listName = searchListFilterDisplayName ?? listId
+            LogStore.shared.info(
+                "⤷ \(filtered.count) après filtre liste « \(listName) »"
+            )
+        }
+
+        let ranked = rankByRelevance(filtered, query: query)
+        for (i, t) in ranked.prefix(5).enumerated() {
+            LogStore.shared.info("    \(i + 1). \(t.name)")
+        }
+        lastError = nil
+        return ranked
+    }
+
+    /// List-scoped search. Pulls every task in the list (paginated),
+    /// then filters / ranks client-side. Reliable even for tasks that
+    /// ClickUp's team-wide `name=` filter inexplicably drops.
+    private func fetchSearchResultsInList(
+        listId: String, query: String
+    ) async -> [ClickUpTask] {
+        let listName = searchListFilterDisplayName ?? listId
+        var all: [TasksResponse.RawTask] = []
+        do {
+            for page in 0..<5 {
+                var components = URLComponents(
+                    string: "https://api.clickup.com/api/v2/list/\(listId)/task"
+                )!
+                components.queryItems = [
+                    URLQueryItem(name: "subtasks", value: "true"),
+                    URLQueryItem(name: "include_closed", value: "true"),
+                    URLQueryItem(name: "page", value: String(page))
+                ]
+                if page == 0, let url = components.url?.absoluteString {
+                    LogStore.shared.info("→ \(url)")
+                }
+                let resp = try await fetchURL(
+                    components.url!, as: TasksResponse.self
+                )
+                if resp.tasks.isEmpty { break }
+                all.append(contentsOf: resp.tasks)
+                if resp.tasks.count < 100 { break }
+            }
+        } catch {
+            if !Self.isCancellation(error) {
+                LogStore.shared.error(
+                    "Erreur recherche liste : \(error.localizedDescription)"
+                )
+                report("search list", error)
+            }
+            return []
+        }
+
+        LogStore.shared.info(
+            "← \(all.count) tâche(s) dans « \(listName) »"
+        )
+
+        // Client-side name filter (case + accent insensitive, multi-word).
+        let q = Self.normalize(query)
+        let qWords = Self.words(in: q)
+        let matched = all.filter { task in
+            let n = Self.normalize(task.name)
+            if n.contains(q) { return true }
+            if qWords.isEmpty { return false }
+            // All query words must appear (anywhere) in the name
+            return qWords.allSatisfy { n.contains($0) }
+        }
+        LogStore.shared.info("⤷ \(matched.count) match(s) sur le nom")
+
+        let ranked = rankByRelevance(matched, query: query)
+        for (i, t) in ranked.prefix(5).enumerated() {
+            LogStore.shared.info("    \(i + 1). \(t.name)")
+        }
+        lastError = nil
+        return ranked
+    }
+
+    /// Fetches paginated `name=<query>` results from the team task
+    /// endpoint. Stops early on the last page.
+    private func fetchTaskPages(
+        teamId: String, name: String, maxPages: Int, logURL: Bool
+    ) async throws -> [TasksResponse.RawTask] {
+        var all: [TasksResponse.RawTask] = []
+        for page in 0..<maxPages {
+            var components = URLComponents(
+                string: "https://api.clickup.com/api/v2/team/\(teamId)/task"
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "name", value: name),
+                URLQueryItem(name: "include_closed", value: "true"),
+                URLQueryItem(name: "subtasks", value: "true"),
+                URLQueryItem(name: "page", value: String(page))
+            ]
+            if logURL, page == 0, let url = components.url?.absoluteString {
+                LogStore.shared.info("→ \(url)")
+            }
+            let resp = try await fetchURL(
+                components.url!, as: TasksResponse.self
+            )
+            if resp.tasks.isEmpty { break }
+            all.append(contentsOf: resp.tasks)
+            if resp.tasks.count < 100 { break }
+        }
+        return all
+    }
+
+    /// Fetches a specific task by id (parsed from a URL or raw id)
+    /// via `GET /task/{id}` and dumps its exact name + ids to the logs
+    /// — useful to verify what ClickUp considers the canonical title.
+    func inspectTask(urlOrId: String) async {
+        let trimmed = urlOrId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Extract id from "/t/<id>" or "/t/<id>/..." patterns; otherwise
+        // treat the input as a bare id.
+        let id: String = {
+            if let range = trimmed.range(of: #"/t/([a-z0-9]+)"#,
+                                         options: .regularExpression) {
+                let captured = String(trimmed[range])
+                    .replacingOccurrences(of: "/t/", with: "")
+                return captured
+            }
+            return trimmed
+        }()
+
+        LogStore.shared.info("══ INSPECT TASK \(id) ══")
+        do {
+            let url = URL(string: "https://api.clickup.com/api/v2/task/\(id)")!
+            let raw = try await fetchURL(url, as: TasksResponse.RawTask.self)
+            LogStore.shared.info("name=\"\(raw.name)\"")
+            LogStore.shared.info("    id=\(raw.id)")
+            if let l = raw.list {
+                LogStore.shared.info("    list=\(l.name ?? "?") (\(l.id ?? "?"))")
+            }
+            if let f = raw.folder {
+                LogStore.shared.info("    folder=\(f.name ?? "?") (\(f.id ?? "?"))")
+            }
+            if let s = raw.space {
+                LogStore.shared.info("    space=\(s.name ?? "?") (\(s.id ?? "?"))")
+            }
+            if let st = raw.status {
+                LogStore.shared.info("    status=\(st.status)")
+            }
+            if let url = raw.url {
+                LogStore.shared.info("    url=\(url)")
+            }
+            // Hex bytes of the name to expose hidden chars (em-dash,
+            // non-breaking space, zero-width, etc.)
+            let bytes = raw.name.unicodeScalars
+                .map { String(format: "U+%04X", $0.value) }
+                .joined(separator: " ")
+            LogStore.shared.info("    chars=\(bytes)")
+            LogStore.shared.info("══ FIN INSPECT ══")
+        } catch {
+            LogStore.shared.error("inspect: \(error.localizedDescription)")
+        }
+    }
+
+    /// Dumps the raw server response for `name=<query>` (no scope, no
+    /// whitelist, no list filter, no ranking) to the logs sidebar.
+    /// Useful for figuring out whether a missing task is filtered
+    /// client-side or simply never returned by ClickUp.
+    func dumpRawSearch(query: String) async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await ensureTeam()
+        guard let teamId else {
+            LogStore.shared.error("dump: team_id manquant")
+            return
+        }
+
+        LogStore.shared.info("══ DUMP RAW pour « \(trimmed) » ══")
+        LogStore.shared.info("Team : \(teamId)")
+
+        do {
+            let primary = try await fetchTaskPages(
+                teamId: teamId, name: trimmed, maxPages: 3, logURL: true
+            )
+            LogStore.shared.info("Primaire « \(trimmed) » : \(primary.count) tâches")
+            for t in primary.prefix(50) {
+                let path = t.path.isEmpty ? "?" : t.path
+                LogStore.shared.info("    \(t.id)  \(t.name)  [\(path)]")
+            }
+            if primary.count > 50 {
+                LogStore.shared.info("    + \(primary.count - 50) tâches non affichées")
+            }
+
+            if let fallback = Self.fallbackQuery(for: trimmed) {
+                let extra = try await fetchTaskPages(
+                    teamId: teamId, name: fallback, maxPages: 1, logURL: true
+                )
+                LogStore.shared.info("Fallback « \(fallback) » : \(extra.count) tâches")
+                let primaryIds = Set(primary.map(\.id))
+                let onlyInFallback = extra.filter { !primaryIds.contains($0.id) }
+                LogStore.shared.info("    dont \(onlyInFallback.count) absentes de la primaire :")
+                for t in onlyInFallback.prefix(50) {
+                    let path = t.path.isEmpty ? "?" : t.path
+                    LogStore.shared.info("    \(t.id)  \(t.name)  [\(path)]")
+                }
+            }
+            LogStore.shared.info("══ FIN DUMP ══")
+        } catch {
+            LogStore.shared.error("dump: \(error.localizedDescription)")
+        }
+    }
+
+    /// Picks a single-word fallback query for multi-word inputs. We
+    /// pick the longest alphanumeric token (≥ 4 chars) — heuristically
+    /// the most distinctive part of the original query.
+    private static func fallbackQuery(for query: String) -> String? {
+        let words = query
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { $0.count >= 4 }
+        guard let longest = words.max(by: { $0.count < $1.count }),
+              longest.lowercased() != query.lowercased() else {
+            return nil
+        }
+        return longest
     }
 
     private var hasAnySelection: Bool {
@@ -351,15 +624,18 @@ final class ClickUpService: ObservableObject {
         return listIds
     }
 
-    /// Server-side `name` filter already guarantees a substring match
-    /// on each result. Sort so exact matches and prefix matches
-    /// surface above generic substring matches.
+    /// Sort the server results by relevance to the query. The server
+    /// uses `updated` order by default, so an exact match can easily
+    /// be drowned by 99 recently-updated unrelated tasks. We re-rank
+    /// here, with diacritic-insensitive matching and support for
+    /// multi-word queries (e.g. "moment effort" matches "moment-effort").
     private func rankByRelevance(
         _ tasks: [TasksResponse.RawTask], query: String
     ) -> [ClickUpTask] {
-        let q = query.lowercased()
+        let q = Self.normalize(query)
+        let qWords = Self.words(in: q)
         return tasks
-            .map { ($0, Self.score(name: $0.name, query: q)) }
+            .map { ($0, Self.score(name: $0.name, query: q, queryWords: qWords)) }
             .sorted { a, b in
                 if a.1 != b.1 { return a.1 < b.1 }
                 return a.0.name.count < b.0.name.count
@@ -367,15 +643,45 @@ final class ClickUpService: ObservableObject {
             .map { $0.0.asTask }
     }
 
-    private static func score(name: String, query: String) -> Int {
-        let n = name.lowercased()
+    private static func normalize(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive],
+                     locale: nil)
+    }
+
+    private static func words(in s: String) -> [String] {
+        s.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    /// Score buckets (lower = more relevant):
+    /// - 0  exact match (case + accent insensitive)
+    /// - 1  name starts with the full query
+    /// - 2  every query word is a prefix of some name word
+    /// - 3  every query word appears anywhere in the name
+    /// - 4  full query is a substring of the name
+    /// - 5  fallback (server matched it but our heuristics didn't)
+    private static func score(
+        name: String, query: String, queryWords: [String]
+    ) -> Int {
+        let n = normalize(name)
         if n == query { return 0 }
         if n.hasPrefix(query) { return 1 }
-        if n.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .contains(where: { $0.lowercased().hasPrefix(query) }) {
+
+        let nWords = words(in: n)
+        if !queryWords.isEmpty,
+           queryWords.allSatisfy({ qw in
+               nWords.contains(where: { $0.hasPrefix(qw) })
+           }) {
             return 2
         }
-        return 3
+        if !queryWords.isEmpty,
+           queryWords.allSatisfy({ n.contains($0) }) {
+            return 3
+        }
+        if n.contains(query) { return 4 }
+        return 5
     }
 
     // MARK: - Inspector (debug)

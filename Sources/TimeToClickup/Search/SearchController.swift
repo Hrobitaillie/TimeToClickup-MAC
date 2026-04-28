@@ -7,12 +7,16 @@ final class SearchController: ObservableObject {
 
     @Published private(set) var isOpen = false
     private var panel: SearchPanel?
+    private var backdrop: BackdropPanel?
 
     func toggle(anchor: NSRect) {
         isOpen ? close() : open(anchor: anchor)
     }
 
     func open(anchor: NSRect) {
+        if backdrop == nil { backdrop = BackdropPanel() }
+        backdrop?.show()
+
         if panel == nil {
             panel = SearchPanel(onPick: { task in
                 TimerState.shared.attach(task: task)
@@ -26,6 +30,7 @@ final class SearchController: ObservableObject {
     func close() {
         guard isOpen else { return }
         panel?.dismiss()
+        backdrop?.hide()
         isOpen = false
     }
 }

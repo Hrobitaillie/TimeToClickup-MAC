@@ -1,7 +1,9 @@
 import SwiftUI
+import AppKit
 
 struct LogSidebarView: View {
     @ObservedObject var store = LogStore.shared
+    @State private var justCopied = false
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -35,6 +37,18 @@ struct LogSidebarView: View {
                 )
             Spacer()
             Button {
+                copyAllLogs()
+            } label: {
+                Image(systemName: justCopied
+                      ? "checkmark.circle.fill"
+                      : "doc.on.doc")
+                    .font(.system(size: 11))
+                    .foregroundStyle(justCopied ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.entries.isEmpty)
+            .help("Copier tous les logs")
+            Button {
                 store.clear()
             } label: {
                 Image(systemName: "trash")
@@ -47,6 +61,20 @@ struct LogSidebarView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    private func copyAllLogs() {
+        let text = store.entries.map { entry in
+            let ts = Self.formatter.string(from: entry.timestamp)
+            return "\(ts) [\(entry.level.tag)] \(entry.message)"
+        }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        withAnimation { justCopied = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation { justCopied = false }
+        }
     }
 
     @ViewBuilder

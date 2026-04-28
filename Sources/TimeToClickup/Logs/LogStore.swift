@@ -44,6 +44,14 @@ struct LogEntry: Identifiable {
             case .error:   return .red
             }
         }
+
+        var tag: String {
+            switch self {
+            case .info:    return "INFO"
+            case .warning: return "WARN"
+            case .error:   return "ERROR"
+            }
+        }
     }
 
     let id = UUID()

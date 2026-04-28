@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 final class SearchPanel: NSPanel {
 
-    static let panelSize = NSSize(width: 384, height: 392)
+    static let panelSize = NSSize(width: 384, height: 460)
 
     private var keyMonitor: Any?
 
@@ -37,8 +37,8 @@ final class SearchPanel: NSPanel {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.36), radius: 28, y: 14)
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        // Shadow dropped — the BackdropPanel behind us provides the
+        // visual separation now.
         .padding(12)
 
         contentView = NSHostingView(rootView: content)
