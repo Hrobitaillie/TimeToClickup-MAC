@@ -4,6 +4,11 @@ import Network
 /// Tiny HTTP server bound to a random localhost port. Used during the
 /// Google OAuth flow to receive the redirect back from the browser
 /// (`http://127.0.0.1:PORT/?code=…`).
+/// Mutable reference flag that's safe to capture in @Sendable closures.
+private final class ResumeFlag: @unchecked Sendable {
+    var value = false
+}
+
 @MainActor
 final class LocalLoopbackServer {
     private var listener: NWListener?
@@ -15,17 +20,20 @@ final class LocalLoopbackServer {
         self.listener = listener
 
         return try await withCheckedThrowingContinuation { cont in
-            var resumed = false
+            // The state handler is @Sendable so it can't capture a
+            // `var`. A reference-typed flag is fine — the listener's
+            // queue is main, so no actual concurrent access happens.
+            let resumed = ResumeFlag()
             listener.stateUpdateHandler = { state in
-                guard !resumed else { return }
+                guard !resumed.value else { return }
                 switch state {
                 case .ready:
                     if let p = listener.port?.rawValue {
-                        resumed = true
+                        resumed.value = true
                         cont.resume(returning: Int(p))
                     }
                 case .failed(let err):
-                    resumed = true
+                    resumed.value = true
                     cont.resume(throwing: err)
                 default: break
                 }

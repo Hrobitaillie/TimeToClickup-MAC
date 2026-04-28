@@ -22,6 +22,21 @@ jobs:
           xcode-select -p
           swift --version
 
+      - name: Write .env from secrets
+        env:
+          GOOGLE_AUTH_CLIENT: ${{ secrets.GOOGLE_AUTH_CLIENT }}
+          GOOGLE_AUTH_SECRET: ${{ secrets.GOOGLE_AUTH_SECRET }}
+        run: |
+          if [ -n "$GOOGLE_AUTH_CLIENT" ] && [ -n "$GOOGLE_AUTH_SECRET" ]; then
+            cat > .env <<EOF
+          GOOGLE_AUTH_CLIENT=$GOOGLE_AUTH_CLIENT
+          GOOGLE_AUTH_SECRET=$GOOGLE_AUTH_SECRET
+          EOF
+            echo "✓ .env written from secrets"
+          else
+            echo "⚠ Google secrets not set — building without bundled credentials"
+          fi
+
       - name: Build .app
         env:
           APP_VERSION: ${{ steps.version.outputs.value }}
