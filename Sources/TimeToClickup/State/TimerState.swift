@@ -44,21 +44,27 @@ final class TimerState: ObservableObject {
         currentEntryId = nil
         scheduleTick()
 
-        // Always push to ClickUp — a taskless entry is fine and lets
-        // the user attach a task later via `attach(task:)`.
+        // Push to ClickUp. Only sync from server if the start
+        // succeeded — otherwise the next poll would see "nothing
+        // running" and stop the local timer, which is not what we
+        // want when ClickUp simply rejected the request.
         let taskId = currentTask?.id
         Task {
             let id = await ClickUpService.shared.startTimeEntry(
                 taskId: taskId
             )
-            if let id { self.currentEntryId = id }
+            guard let id else { return }
+            self.currentEntryId = id
             await self.syncFromServer()
         }
     }
 
     func stop() {
         guard isRunning else { return }
-        let hadTask = currentTask != nil
+        // Stop on ClickUp whenever an entry exists on the server —
+        // a taskless entry is still a real entry and needs to be
+        // closed too.
+        let hadEntry = currentEntryId != nil
         ticker?.invalidate()
         ticker = nil
         isRunning = false
@@ -68,7 +74,7 @@ final class TimerState: ObservableObject {
         currentEntryId = nil
         taskDescription = ""
 
-        if hadTask {
+        if hadEntry {
             Task { await ClickUpService.shared.stopTimeEntry() }
         }
     }
@@ -128,7 +134,10 @@ final class TimerState: ObservableObject {
 
     private func apply(serverEntry: RunningEntry?) {
         guard let entry = serverEntry else {
-            if isRunning { stopLocally() }
+            // Only honour "server has nothing" when we were actually
+            // mirroring an entry. A purely local timer (e.g. ClickUp
+            // refused the start) shouldn't be killed by every poll.
+            if isRunning, currentEntryId != nil { stopLocally() }
             return
         }
 
