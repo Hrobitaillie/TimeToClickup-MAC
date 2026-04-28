@@ -52,6 +52,14 @@ else
     ICON_KEY=''
 fi
 
+# Bundle .env as credentials.env so the OAuth client_id / client_secret
+# travel with the .app. The file is gitignored — on CI we expect it to
+# come from a GitHub secret (handled by the workflow before this runs).
+if [ -f ".env" ]; then
+    cp .env "$RES/credentials.env"
+    print -P "%F{cyan}→%f Bundled .env into Resources/credentials.env"
+fi
+
 cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -31,6 +31,7 @@ final class OverlayPanel: NSPanel {
             .environmentObject(ClickUpService.shared)
             .environmentObject(SearchController.shared)
             .environmentObject(DescriptionController.shared)
+            .environmentObject(CalendarSyncCoordinator.shared)
 
         contentView = NSHostingView(rootView: root)
         positionTopCenter()

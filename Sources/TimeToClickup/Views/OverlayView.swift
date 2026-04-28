@@ -10,6 +10,7 @@ struct OverlayView: View {
     @EnvironmentObject var clickup: ClickUpService
     @EnvironmentObject var search: SearchController
     @EnvironmentObject var descCtl: DescriptionController
+    @EnvironmentObject var calendar: CalendarSyncCoordinator
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -118,6 +119,14 @@ struct OverlayView: View {
                                 .animation(morphSpring.delay(0.045)),
                             removal: .opacity
                         ))
+
+                    calendarButton
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.6)
+                                .combined(with: .opacity)
+                                .animation(morphSpring.delay(0.05)),
+                            removal: .opacity
+                        ))
                 }
 
                 searchButton
@@ -220,6 +229,16 @@ struct OverlayView: View {
         ) {
             guard let panel = OverlayPanel.current else { return }
             descCtl.toggle(anchor: panel.frame, initial: timer.taskDescription)
+        }
+    }
+
+    private var calendarButton: some View {
+        CalendarPillButton(
+            active: calendar.enabled,
+            connected: GoogleAuthService.shared.isConnected,
+            inProgress: calendar.hasActiveEvent
+        ) {
+            calendar.toggle()
         }
     }
 
@@ -436,6 +455,91 @@ private struct StartStopButton: View {
             colors: [Color(red: 0.22, green: 0.80, blue: 0.44),
                      Color(red: 0.14, green: 0.62, blue: 0.34)],
             startPoint: .top, endPoint: .bottom
+        )
+    }
+}
+
+// MARK: - Calendar pill button (toggles Google Calendar sync)
+
+private struct CalendarPillButton: View {
+    let active: Bool
+    let connected: Bool
+    let inProgress: Bool
+    let action: () -> Void
+    @State private var hovering = false
+    @State private var pressed = false
+
+    private var iconName: String {
+        if !connected { return "calendar.badge.exclamationmark" }
+        if active && inProgress { return "calendar.badge.clock" }
+        if active { return "calendar.circle.fill" }
+        return "calendar"
+    }
+
+    private var tint: Color {
+        if !connected { return .secondary }
+        if active { return .accentColor }
+        return .primary.opacity(0.85)
+    }
+
+    private var help: String {
+        if !connected {
+            return "Connecte Google Calendar dans les Settings"
+        }
+        if active {
+            return inProgress
+                ? "Sync calendrier active — event en cours"
+                : "Sync calendrier active — désactiver"
+        }
+        return "Activer la sync Google Calendar"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: iconName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(.thickMaterial))
+                    .overlay(
+                        Circle().strokeBorder(
+                            active
+                                ? Color.accentColor.opacity(0.55)
+                                : Color.white.opacity(hovering ? 0.22 : 0.12),
+                            lineWidth: active ? 1 : 0.5
+                        )
+                    )
+
+                if inProgress {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                        .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
+                        .offset(x: 1, y: -1)
+                }
+            }
+            .scaleEffect(pressed ? 0.92 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .disabled(!connected)
+        .help(help)
+        .accessibilityLabel(help)
+        .onHover { v in
+            withAnimation(.easeOut(duration: 0.15)) { hovering = v }
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !pressed {
+                        withAnimation(.easeOut(duration: 0.08)) { pressed = true }
+                    }
+                }
+                .onEnded { _ in
+                    withAnimation(
+                        .interactiveSpring(response: 0.25, dampingFraction: 0.6)
+                    ) { pressed = false }
+                }
         )
     }
 }

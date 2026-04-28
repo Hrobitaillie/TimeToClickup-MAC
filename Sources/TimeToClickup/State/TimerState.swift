@@ -20,6 +20,9 @@ final class TimerState: ObservableObject {
     private var ticker: Timer?
     private var syncTimer: Timer?
 
+    /// Read-only access for the calendar coordinator.
+    var startTime: Date? { startedAt }
+
     private let syncInterval: TimeInterval = 15
 
     var formatted: String {
@@ -44,6 +47,8 @@ final class TimerState: ObservableObject {
         currentEntryId = nil
         scheduleTick()
 
+        CalendarSyncCoordinator.shared.timerDidStart()
+
         // Push to ClickUp. Only sync from server if the start
         // succeeded — otherwise the next poll would see "nothing
         // running" and stop the local timer, which is not what we
@@ -61,9 +66,10 @@ final class TimerState: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
-        // Stop on ClickUp whenever an entry exists on the server —
-        // a taskless entry is still a real entry and needs to be
-        // closed too.
+        // Capture state for the coordinator BEFORE we clear it — the
+        // calendar event needs the still-current task/description.
+        CalendarSyncCoordinator.shared.timerWillStop()
+
         let hadEntry = currentEntryId != nil
         ticker?.invalidate()
         ticker = nil
@@ -85,6 +91,7 @@ final class TimerState: ObservableObject {
         currentTask = task
         taskDescription = ""
         ClickUpService.shared.markRecent(task)
+        CalendarSyncCoordinator.shared.timerInfoDidChange()
 
         if wasRunning, let entryId {
             // We already have a running entry on ClickUp — just patch
@@ -198,6 +205,7 @@ final class TimerState: ObservableObject {
     /// immediately; local copy stays in sync.
     func setDescription(_ text: String) {
         taskDescription = text
+        CalendarSyncCoordinator.shared.timerInfoDidChange()
         guard let entryId = currentEntryId else { return }
         Task {
             await ClickUpService.shared.updateTimeEntryDescription(

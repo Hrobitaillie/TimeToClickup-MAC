@@ -7,3 +7,5 @@ Package.resolved
 dist/
 # Generated from assets/icon-source.png by build_app.sh
 assets/AppIcon.icns
+# OAuth credentials (bundled into the .app at build time, never committed)
+.env

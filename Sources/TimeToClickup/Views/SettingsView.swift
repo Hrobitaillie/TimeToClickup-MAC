@@ -28,20 +28,31 @@ final class SettingsWindowController {
 struct SettingsView: View {
     @ObservedObject var clickup = ClickUpService.shared
 
+    @ObservedObject var google = GoogleAuthService.shared
+
     @State private var token: String =
         KeychainHelper.shared.get(key: "clickup_api_token") ?? ""
     @State private var tokenSaved = false
 
+    @State private var googleClientId: String =
+        GoogleAuthService.shared.clientId ?? ""
+    @State private var googleClientSecret: String =
+        GoogleAuthService.shared.clientSecret ?? ""
+
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
-                tokenSection
-                Divider()
-                spacesSection
-                Divider()
-                searchTestSection
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    tokenSection
+                    Divider()
+                    googleSection
+                    Divider()
+                    spacesSection
+                    Divider()
+                    searchTestSection
+                }
+                .padding(20)
             }
-            .padding(20)
             .frame(width: 540)
 
             Divider()
@@ -255,6 +266,133 @@ struct SettingsView: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             await MainActor.run { withAnimation { tokenSaved = false } }
             await clickup.loadAllSpaces()
+        }
+    }
+
+    // MARK: - Google Calendar
+
+    private var googleSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Google Calendar", systemImage: "calendar")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if google.isAuthorizing {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            if google.isConnected {
+                connectedRow
+            } else if google.hasBundledCredentials {
+                bundledConnectRow
+            } else {
+                credentialsForm
+            }
+
+            if let err = google.lastError {
+                Text(err)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private var connectedRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(google.connectedEmail ?? "—")
+                .font(.system(size: 12, weight: .medium))
+            Spacer()
+            Button("Déconnecter") { google.disconnect() }
+                .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var bundledConnectRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: google.isAuthorizing
+                  ? "hourglass" : "link.circle")
+                .foregroundStyle(.secondary)
+            Text(google.isAuthorizing
+                 ? "En attente de l'autorisation dans le navigateur…"
+                 : "Synchronise tes timers ClickUp avec ton agenda Google.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            if google.isAuthorizing {
+                Button("Annuler") {
+                    google.cancelAuthorization()
+                }
+                .controlSize(.small)
+            } else {
+                Button { connectGoogle() } label: {
+                    Label("Connecter Google", systemImage: "link")
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var credentialsForm: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Client ID")
+                    .frame(width: 90, alignment: .trailing)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("xxx.apps.googleusercontent.com",
+                          text: $googleClientId)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            HStack {
+                Text("Client secret")
+                    .frame(width: 90, alignment: .trailing)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                SecureField("GOCSPX-…", text: $googleClientSecret)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            HStack {
+                Text("Console Google Cloud → Credentials → OAuth 2.0 Client ID type **Desktop app**. Active **Calendar API** + ajoute-toi en *test user* sur l'écran de consentement.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button {
+                    connectGoogle()
+                } label: {
+                    Label("Connecter", systemImage: "link")
+                }
+                .controlSize(.small)
+                .disabled(google.isAuthorizing
+                          || googleClientId.isEmpty
+                          || googleClientSecret.isEmpty)
+            }
+        }
+    }
+
+    private func connectGoogle() {
+        if !google.hasBundledCredentials {
+            google.setCredentials(
+                clientId: googleClientId,
+                clientSecret: googleClientSecret
+            )
+        }
+        google.lastError = nil
+        Task {
+            do { try await google.connect() }
+            catch {
+                if !(error is CancellationError) {
+                    google.lastError = error.localizedDescription
+                }
+            }
         }
     }
 
