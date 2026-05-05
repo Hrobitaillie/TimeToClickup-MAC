@@ -977,52 +977,55 @@ private struct ListAutocompleteField: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
 
-            TextField("Chercher une liste à préfixer…", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .focused($focused)
-                .onChange(of: focused) { _, f in
-                    if f { open = true }
-                }
-                .onChange(of: query) { _, _ in
-                    if focused { open = true }
-                }
+                TextField("Chercher une liste à préfixer…", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($focused)
+                    .onChange(of: focused) { _, f in
+                        if f { open = true }
+                    }
+                    .onChange(of: query) { _, _ in
+                        if focused { open = true }
+                    }
 
-            if !query.isEmpty {
-                Button { query = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
-                        .font(.system(size: 11))
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .cursor(.pointingHand)
                 }
-                .buttonStyle(.plain)
-                .cursor(.pointingHand)
             }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.primary.opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(
-                    focused ? Color.accentColor.opacity(0.45)
-                            : Color.primary.opacity(0.10),
-                    lineWidth: 0.7
-                )
-        )
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            autocompletePopover
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(
+                        focused ? Color.accentColor.opacity(0.45)
+                                : Color.primary.opacity(0.10),
+                        lineWidth: 0.7
+                    )
+            )
+
+            if open {
+                autocompleteSuggestions
+            }
         }
     }
 
-    private var autocompletePopover: some View {
+    private var autocompleteSuggestions: some View {
         VStack(alignment: .leading, spacing: 0) {
             if clickup.flatLists.isEmpty {
                 HStack(spacing: 8) {
@@ -1038,14 +1041,14 @@ private struct ListAutocompleteField: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
-                .padding(14)
-                .frame(width: 380)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if matches.isEmpty {
                 Text("Aucune correspondance.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .padding(14)
-                    .frame(width: 380)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -1061,9 +1064,17 @@ private struct ListAutocompleteField: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .frame(width: 380, height: min(CGFloat(matches.count) * 38 + 8, 320))
+                .frame(height: min(CGFloat(matches.count) * 38 + 8, 260))
             }
         }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        )
     }
 }
 
