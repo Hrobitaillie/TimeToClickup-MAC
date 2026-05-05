@@ -4,6 +4,7 @@ struct ClickUpTask: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let name: String
     var status: String?
+    var listId: String?
     var listName: String?
     var folderName: String?
     var spaceName: String?
@@ -53,6 +54,7 @@ extension TasksResponse.RawTask {
             id: id,
             name: name,
             status: status?.status,
+            listId: list?.id,
             listName: list?.name,
             folderName: folder?.name,
             spaceName: space?.name,

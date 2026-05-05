@@ -144,13 +144,24 @@ struct TaskSearchView: View {
                     Divider().opacity(0.2).padding(.leading, 36)
 
                     if filteredFlatLists.isEmpty {
-                        Text(clickup.flatLists.isEmpty
-                             ? "Aucune liste chargée. Va dans Settings et clique « Recharger »."
-                             : "Aucune correspondance.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        if clickup.flatLists.isEmpty && clickup.loadingSpaces {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Chargement des listes…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
                             .padding(.vertical, 24)
                             .frame(maxWidth: .infinity)
+                        } else {
+                            Text(clickup.flatLists.isEmpty
+                                 ? "Aucune liste disponible."
+                                 : "Aucune correspondance.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 24)
+                                .frame(maxWidth: .infinity)
+                        }
                     } else {
                         ForEach(filteredFlatLists) { item in
                             ListPickerRow(

@@ -114,6 +114,23 @@ final class CalendarSyncCoordinator: ObservableObject {
             hasActiveEvent = true
             scheduleExtendTimer()
             LogStore.shared.info("📅 ← Event créé (id \(id))")
+
+            // The user may have attached a task or edited the
+            // description while the create call was in flight. Reapply
+            // the freshest state so we don't end up with a stale event
+            // titled "Time entry" or missing the list prefix.
+            let latestSummary = runningSummary(for: TimerState.shared.currentTask)
+            let latestDescription = currentDescription()
+            if latestSummary != summary || latestDescription != description {
+                LogStore.shared.info(
+                    "📅 → PATCH (rattrapage post-création) « \(latestSummary) »"
+                )
+                try? await GoogleCalendarService.shared.patchEvent(
+                    id: id,
+                    summary: latestSummary,
+                    description: latestDescription
+                )
+            }
         } catch {
             LogStore.shared.error(
                 "Calendar create: \(error.localizedDescription)"
@@ -178,12 +195,52 @@ final class CalendarSyncCoordinator: ObservableObject {
 
     // MARK: - Formatting
 
+    /// Optionally prefix the task name with the user-defined list
+    /// prefix (e.g. "[Pompotes] " for tasks in the Pompotes list).
+    /// Configured per-list in Settings; absent prefix → no change.
+    /// Falls back to matching by `listName` when the task has no
+    /// `listId` — covers tasks restored from the recents store before
+    /// we started persisting the list id.
+    private func taskTitle(for task: ClickUpTask?) -> String {
+        let base = task?.name ?? "Time entry"
+        guard let task else { return base }
+
+        let service = ClickUpService.shared
+        // Direct lookup by id.
+        if let p = service.prefix(forListId: task.listId) {
+            return "[\(p)] \(base)"
+        }
+        // Fallback: match on listName via the loaded workspace tree.
+        if let listName = task.listName,
+           let resolvedId = service.flatLists.first(where: {
+               $0.name == listName
+           })?.id,
+           let p = service.prefix(forListId: resolvedId) {
+            return "[\(p)] \(base)"
+        }
+        // No prefix found — log so the user can see why in the sidebar.
+        if let listId = task.listId {
+            LogStore.shared.info(
+                "🏷  pas de préfixe configuré pour list_id \(listId) (« \(task.listName ?? "?") »)"
+            )
+        } else if let listName = task.listName {
+            LogStore.shared.info(
+                "🏷  pas de list_id sur la tâche, fallback nom « \(listName) » sans match"
+            )
+        } else {
+            LogStore.shared.info(
+                "🏷  tâche sans liste — préfixe impossible"
+            )
+        }
+        return base
+    }
+
     private func runningSummary(for task: ClickUpTask?) -> String {
-        runningPrefix + (task?.name ?? "Time entry") + runningSuffix
+        runningPrefix + taskTitle(for: task) + runningSuffix
     }
 
     private func finalSummary(for task: ClickUpTask?) -> String {
-        task?.name ?? "Time entry"
+        taskTitle(for: task)
     }
 
     private func currentDescription(running: Bool = true) -> String {

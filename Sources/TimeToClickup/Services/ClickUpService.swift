@@ -20,6 +20,11 @@ final class ClickUpService: ObservableObject {
     /// usually stay on the same project all day.
     @Published var searchListFilter: String?
 
+    /// `listId → prefix` map for calendar event titles. The user
+    /// configures this in Settings (e.g. "Pompotes" for the Pompotes
+    /// list) so calendar events read like "[Pompotes] Fix login bug".
+    @Published private(set) var listPrefixes: [String: String] = [:]
+
     private let recentStore = RecentTasksStore()
     private var teamLoadTask: Task<Void, Never>?
     private var userLoadTask: Task<Void, Never>?
@@ -29,6 +34,7 @@ final class ClickUpService: ObservableObject {
     private let selectedFoldersKey = "selected_folder_ids"
     private let selectedListsKey = "selected_list_ids"
     private let searchListFilterKey = "search_list_filter"
+    private let listPrefixesKey = "list_prefixes"
 
     private var apiToken: String? {
         KeychainHelper.shared.get(key: "clickup_api_token")
@@ -53,6 +59,41 @@ final class ClickUpService: ObservableObject {
         searchListFilter = UserDefaults.standard.string(
             forKey: searchListFilterKey
         )
+        if let raw = UserDefaults.standard.dictionary(forKey: listPrefixesKey)
+            as? [String: String] {
+            listPrefixes = raw
+        }
+    }
+
+    /// Sets (or replaces) the prefix for a list. An empty string is
+    /// kept as a placeholder so the list still appears in the
+    /// configured table — calendar formatting treats empty as "no
+    /// prefix". Use `removePrefix(forListId:)` to drop the entry
+    /// entirely.
+    func setPrefix(_ prefix: String, forListId id: String) {
+        let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        listPrefixes[id] = trimmed
+        UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+    }
+
+    /// Adds a list to the configured set with an empty prefix —
+    /// triggered by the autocomplete in Settings. Idempotent.
+    func addPrefix(forListId id: String) {
+        if listPrefixes[id] == nil {
+            listPrefixes[id] = ""
+            UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+        }
+    }
+
+    func removePrefix(forListId id: String) {
+        guard listPrefixes[id] != nil else { return }
+        listPrefixes.removeValue(forKey: id)
+        UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+    }
+
+    func prefix(forListId id: String?) -> String? {
+        guard let id, let p = listPrefixes[id], !p.isEmpty else { return nil }
+        return p
     }
 
     func setSearchListFilter(_ id: String?) {
@@ -143,7 +184,12 @@ final class ClickUpService: ObservableObject {
     }
 
     func preloadSearch() {
-        Task { await ensureTeam() }
+        Task {
+            await ensureTeam()
+            if availableSpaces.isEmpty && !loadingSpaces && hasToken {
+                await loadAllSpaces()
+            }
+        }
     }
 
     // MARK: - Whitelist (Spaces + Folders)
@@ -853,6 +899,35 @@ final class ClickUpService: ObservableObject {
                 "✗ attach task: \(error.localizedDescription)"
             )
             report("attach task", error)
+        }
+    }
+
+    /// Backdates the start of an existing time entry. ClickUp stores
+    /// `start` in milliseconds since epoch; updating it on a running
+    /// entry is what we use to launch a timer "il y a X minutes".
+    func updateTimeEntryStart(entryId: String, start: Date) async {
+        await ensureTeam()
+        guard let team = self.teamId else {
+            LogStore.shared.warn("⚠ start backdate: team_id manquant — ignoré")
+            return
+        }
+        let ms = Int64(start.timeIntervalSince1970 * 1000)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        LogStore.shared.info(
+            "✎ PUT start=\(formatter.string(from: start)) (\(ms)) sur l'entry \(entryId)"
+        )
+        do {
+            _ = try await put(
+                path: "/team/\(team)/time_entries/\(entryId)",
+                body: ["start": ms]
+            )
+            LogStore.shared.info("✓ Start backdaté")
+        } catch {
+            LogStore.shared.error(
+                "✗ start backdate: \(error.localizedDescription)"
+            )
+            report("backdate start", error)
         }
     }
 

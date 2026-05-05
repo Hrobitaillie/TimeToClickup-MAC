@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         showOverlay()
         TimerState.shared.startSyncing()
+        IdleAlertState.shared.startMonitoring()
     }
 
     /// Even though we're an LSUIElement / accessory app, SwiftUI's

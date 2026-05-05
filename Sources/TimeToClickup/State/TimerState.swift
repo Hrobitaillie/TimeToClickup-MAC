@@ -39,10 +39,11 @@ final class TimerState: ObservableObject {
 
     func toggle() { isRunning ? stop() : start() }
 
-    func start() {
+    func start(backdateBy: TimeInterval = 0) {
         guard !isRunning else { return }
-        startedAt = Date()
-        elapsedTime = 0
+        let backdate = max(0, backdateBy)
+        startedAt = Date().addingTimeInterval(-backdate)
+        elapsedTime = backdate
         isRunning = true
         currentEntryId = nil
         scheduleTick()
@@ -54,12 +55,22 @@ final class TimerState: ObservableObject {
         // running" and stop the local timer, which is not what we
         // want when ClickUp simply rejected the request.
         let taskId = currentTask?.id
+        let backdatedStart = startedAt
         Task {
             let id = await ClickUpService.shared.startTimeEntry(
                 taskId: taskId
             )
             guard let id else { return }
             self.currentEntryId = id
+
+            // ClickUp's `/start` endpoint always uses now() — apply the
+            // backdate via PUT so the entry's elapsed time matches the
+            // local clock.
+            if backdate > 0, let backdatedStart {
+                await ClickUpService.shared.updateTimeEntryStart(
+                    entryId: id, start: backdatedStart
+                )
+            }
             await self.syncFromServer()
         }
     }
@@ -186,7 +197,14 @@ final class TimerState: ObservableObject {
         if serverDesc != taskDescription { taskDescription = serverDesc }
 
         guard let taskId = entry.taskId else {
-            if currentTask != nil { currentTask = nil }
+            // Server's running entry has no task. This often happens
+            // in the small window between `attach(task:)` setting
+            // currentTask locally and ClickUp finishing the
+            // `updateTimeEntryTask` PUT. Clobbering currentTask here
+            // would drop the just-attached task (and its listId, which
+            // the calendar prefix needs). Leave local state alone —
+            // local edits win over polls. Stop() handles the real
+            // "task was removed" case by clearing everything.
             return
         }
         if currentTask?.id == taskId { return }
@@ -194,6 +212,7 @@ final class TimerState: ObservableObject {
             id: taskId,
             name: entry.taskName ?? "Tâche \(taskId)",
             status: nil,
+            listId: nil,
             listName: nil,
             folderName: nil,
             spaceName: nil,
