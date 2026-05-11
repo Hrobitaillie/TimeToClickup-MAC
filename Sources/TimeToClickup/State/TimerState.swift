@@ -55,10 +55,23 @@ final class TimerState: ObservableObject {
         // running" and stop the local timer, which is not what we
         // want when ClickUp simply rejected the request.
         let taskId = currentTask?.id
+        // When a task is already selected at start, also auto-track
+        // its list (so the user's config table fills itself). The
+        // billable flag is resolved inside the async Task below —
+        // task-prior > list config > API default — so we don't block
+        // the local clock on the network round-trip.
+        let listId = currentTask?.listId
+        let listName = currentTask?.listName
+        ClickUpService.shared.ensureListTracked(listId, listName: listName)
+        let listBillable = ClickUpService.shared.billable(forListId: listId)
         let backdatedStart = startedAt
         Task {
+            let priorBillable: Bool? = if let taskId {
+                await ClickUpService.shared.lastBillable(forTaskId: taskId)
+            } else { nil }
+            let billable = priorBillable ?? listBillable
             let id = await ClickUpService.shared.startTimeEntry(
-                taskId: taskId
+                taskId: taskId, billable: billable
             )
             guard let id else { return }
             self.currentEntryId = id
@@ -102,14 +115,31 @@ final class TimerState: ObservableObject {
         currentTask = task
         taskDescription = ""
         ClickUpService.shared.markRecent(task)
+        // Auto-add the task's list to the configured table (no-op if
+        // already there). The billable resolution happens inside the
+        // async Task below: task-prior > list config > API default,
+        // so we both fix the "play first, attach later" billing bug
+        // and carry forward the user's previous billable choice on
+        // the same task without blocking the UI.
+        ClickUpService.shared.ensureListTracked(
+            task.listId, listName: task.listName
+        )
+        let listBillable = ClickUpService.shared.billable(
+            forListId: task.listId
+        )
+        let taskId = task.id
         CalendarSyncCoordinator.shared.timerInfoDidChange()
 
         if wasRunning, let entryId {
             // We already have a running entry on ClickUp — just patch
-            // its `tid` so the timer keeps going, no stop+start churn.
+            // its `tid` (and billable) so the timer keeps going, no
+            // stop+start churn.
             Task {
+                let priorBillable = await ClickUpService.shared
+                    .lastBillable(forTaskId: taskId)
+                let billable = priorBillable ?? listBillable
                 await ClickUpService.shared.updateTimeEntryTask(
-                    entryId: entryId, taskId: task.id
+                    entryId: entryId, taskId: taskId, billable: billable
                 )
                 await self.syncFromServer()
             }
@@ -121,8 +151,11 @@ final class TimerState: ObservableObject {
         // Running locally but no server entry yet (rare race): start a
         // fresh entry now.
         Task {
+            let priorBillable = await ClickUpService.shared
+                .lastBillable(forTaskId: taskId)
+            let billable = priorBillable ?? listBillable
             let id = await ClickUpService.shared.startTimeEntry(
-                taskId: task.id
+                taskId: taskId, billable: billable
             )
             if let id { self.currentEntryId = id }
             await self.syncFromServer()

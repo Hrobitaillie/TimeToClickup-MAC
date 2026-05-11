@@ -564,7 +564,7 @@ struct SettingsView: View {
                 .disabled(!clickup.hasToken || clickup.loadingSpaces)
             }
 
-            Text("Cherche une liste et ajoute son préfixe. Le préfixe sera mis entre crochets devant le titre du timer dans Google Calendar (ex. **« [Pompotes] Fix login bug »**).")
+            Text("Chaque liste sur laquelle tu démarres un timer est ajoutée ici automatiquement. Tu peux y mettre un **préfixe** (préfixé entre crochets devant le titre Google Calendar, ex. **« [Pompotes] Fix login bug »**) et choisir si le temps tracké est **facturable**. Les nouvelles listes sont facturables par défaut.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -578,7 +578,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var configuredPrefixesTable: some View {
         let configured = clickup.flatLists
-            .filter { clickup.listPrefixes[$0.id] != nil }
+            .filter { clickup.listConfigs[$0.id] != nil }
 
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -962,7 +962,7 @@ private struct ListAutocompleteField: View {
         // Don't show already-configured lists in the autocomplete; they
         // already appear in the table below.
         let unconfigured = clickup.flatLists.filter {
-            (clickup.listPrefixes[$0.id] ?? "").isEmpty
+            clickup.listConfigs[$0.id] == nil
         }
         if q.isEmpty {
             return Array(unconfigured.prefix(8))
@@ -1054,7 +1054,7 @@ private struct ListAutocompleteField: View {
                     LazyVStack(spacing: 0) {
                         ForEach(matches) { list in
                             AutocompleteRow(list: list) {
-                                clickup.addPrefix(forListId: list.id)
+                                clickup.addListConfig(forListId: list.id)
                                 query = ""
                                 open = false
                                 focused = false
@@ -1129,7 +1129,12 @@ private struct PrefixRow: View {
     @State private var hovering = false
     @FocusState private var focused: Bool
 
-    private var stored: String { clickup.listPrefixes[list.id] ?? "" }
+    private var stored: String {
+        clickup.listConfigs[list.id]?.prefix ?? ""
+    }
+    private var billable: Bool {
+        clickup.listConfigs[list.id]?.billable ?? true
+    }
     private var dirty: Bool { draft != stored }
 
     var body: some View {
@@ -1195,8 +1200,18 @@ private struct PrefixRow: View {
             .help("Sauvegarder")
             .cursor(.pointingHand)
 
+            BillableToggleButton(isOn: billable) {
+                let next = !billable
+                _ = clickup.setBillable(next, forListId: list.id)
+                LogStore.shared.info(
+                    next
+                        ? "💲 Liste « \(list.name) » → facturable"
+                        : "💲 Liste « \(list.name) » → non facturable"
+                )
+            }
+
             Button {
-                clickup.removePrefix(forListId: list.id)
+                clickup.removeListConfig(forListId: list.id)
             } label: {
                 Image(systemName: "trash")
                     .foregroundStyle(.secondary)
@@ -1225,6 +1240,44 @@ private struct PrefixRow: View {
 
     private func commit() {
         clickup.setPrefix(draft, forListId: list.id)
+    }
+}
+
+/// Billable toggle styled after ClickUp's dollar-in-a-circle icon. We
+/// use the SF Symbol `dollarsign.circle.fill` which is visually
+/// equivalent (and renders natively at any resolution); the active
+/// state is tinted in ClickUp's signature green so the row reads at
+/// a glance.
+private struct BillableToggleButton: View {
+    let isOn: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    private static let activeGreen = Color(red: 0.18, green: 0.74, blue: 0.45)
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(isOn
+                          ? Self.activeGreen.opacity(hovering ? 0.18 : 0.12)
+                          : Color.primary.opacity(hovering ? 0.08 : 0))
+                Image(systemName: "dollarsign.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(
+                        isOn
+                            ? Self.activeGreen
+                            : Color.secondary.opacity(0.55)
+                    )
+            }
+            .frame(width: 24, height: 24)
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { hovering = $0 }
+        .help(isOn
+              ? "Facturable — clique pour désactiver"
+              : "Non facturable — clique pour activer")
     }
 }
 

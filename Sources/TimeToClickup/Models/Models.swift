@@ -116,6 +116,17 @@ struct ClickUpFlatList: Identifiable, Hashable {
     let path: String
 }
 
+/// Per-list configuration the user can tune in Settings → Préfixes :
+/// calendar event prefix + whether time tracked on tasks of this list
+/// is billable. Stored in `UserDefaults` under `list_configs`. Auto-
+/// added when the user attaches a task from a list for the first time
+/// (`ClickUpService.ensureListTracked`), with `billable = true` by
+/// default — non-billable lists are typically the exception.
+struct ListConfig: Codable, Equatable {
+    var prefix: String = ""
+    var billable: Bool = true
+}
+
 // MARK: - Time entries
 
 struct RunningEntry: Equatable {
@@ -145,6 +156,19 @@ struct StartTimeEntryResponse: Decodable {
     let data: Entry?
     struct Entry: Decodable {
         let id: String
+    }
+}
+
+/// `GET /team/{id}/time_entries` returns a list of entries. We only
+/// need `start` (to sort newest-first) and `billable` so we can carry
+/// the previously-set facturable state forward to the next entry on
+/// the same task.
+struct TimeEntriesQueryResponse: Decodable {
+    let data: [Entry]?
+    struct Entry: Decodable {
+        let id: String?
+        let billable: Bool?
+        let start: FlexibleNumber?
     }
 }
 

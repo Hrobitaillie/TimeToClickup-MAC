@@ -20,10 +20,14 @@ final class ClickUpService: ObservableObject {
     /// usually stay on the same project all day.
     @Published var searchListFilter: String?
 
-    /// `listId → prefix` map for calendar event titles. The user
-    /// configures this in Settings (e.g. "Pompotes" for the Pompotes
-    /// list) so calendar events read like "[Pompotes] Fix login bug".
-    @Published private(set) var listPrefixes: [String: String] = [:]
+    /// Per-list config (prefix + billable). The user configures this
+    /// in Settings → Préfixes; entries are auto-added the first time
+    /// a task from a given list is attached to a running timer (so the
+    /// table fills itself as the user works). The prefix is shown in
+    /// front of the calendar event title (`[Pompotes] Fix login bug`);
+    /// the billable flag is forwarded to ClickUp when the entry is
+    /// started or its task changes.
+    @Published private(set) var listConfigs: [String: ListConfig] = [:]
 
     private let recentStore = RecentTasksStore()
     private var teamLoadTask: Task<Void, Never>?
@@ -34,7 +38,10 @@ final class ClickUpService: ObservableObject {
     private let selectedFoldersKey = "selected_folder_ids"
     private let selectedListsKey = "selected_list_ids"
     private let searchListFilterKey = "search_list_filter"
-    private let listPrefixesKey = "list_prefixes"
+    private let listConfigsKey = "list_configs"
+    /// Legacy storage key, kept only to migrate `[listId: String]` ->
+    /// `[listId: ListConfig]` on first launch after the upgrade.
+    private let legacyPrefixesKey = "list_prefixes"
 
     private var apiToken: String? {
         KeychainHelper.shared.get(key: "clickup_api_token")
@@ -59,41 +66,107 @@ final class ClickUpService: ObservableObject {
         searchListFilter = UserDefaults.standard.string(
             forKey: searchListFilterKey
         )
-        if let raw = UserDefaults.standard.dictionary(forKey: listPrefixesKey)
+        listConfigs = Self.loadStoredConfigs(
+            primaryKey: listConfigsKey,
+            legacyKey: legacyPrefixesKey
+        )
+    }
+
+    /// Decodes `list_configs` from UserDefaults if present, otherwise
+    /// migrates the legacy `list_prefixes` (`[listId: String]`) map by
+    /// wrapping each prefix in a `ListConfig` with `billable = true`.
+    /// The legacy key is then deleted so the migration runs once.
+    private static func loadStoredConfigs(
+        primaryKey: String, legacyKey: String
+    ) -> [String: ListConfig] {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: primaryKey),
+           let decoded = try? JSONDecoder()
+                .decode([String: ListConfig].self, from: data) {
+            return decoded
+        }
+        if let legacy = defaults.dictionary(forKey: legacyKey)
             as? [String: String] {
-            listPrefixes = raw
+            let migrated = legacy.mapValues { ListConfig(prefix: $0) }
+            if let data = try? JSONEncoder().encode(migrated) {
+                defaults.set(data, forKey: primaryKey)
+            }
+            defaults.removeObject(forKey: legacyKey)
+            return migrated
+        }
+        return [:]
+    }
+
+    private func persistConfigs() {
+        if let data = try? JSONEncoder().encode(listConfigs) {
+            UserDefaults.standard.set(data, forKey: listConfigsKey)
         }
     }
 
     /// Sets (or replaces) the prefix for a list. An empty string is
-    /// kept as a placeholder so the list still appears in the
-    /// configured table — calendar formatting treats empty as "no
-    /// prefix". Use `removePrefix(forListId:)` to drop the entry
-    /// entirely.
+    /// kept so the list still appears in the configured table —
+    /// calendar formatting treats empty as "no prefix". Use
+    /// `removeListConfig(forListId:)` to drop the entry entirely.
     func setPrefix(_ prefix: String, forListId id: String) {
         let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        listPrefixes[id] = trimmed
-        UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+        var cfg = listConfigs[id] ?? ListConfig()
+        cfg.prefix = trimmed
+        listConfigs[id] = cfg
+        persistConfigs()
     }
 
-    /// Adds a list to the configured set with an empty prefix —
+    /// Adds a list to the configured set with default config —
     /// triggered by the autocomplete in Settings. Idempotent.
-    func addPrefix(forListId id: String) {
-        if listPrefixes[id] == nil {
-            listPrefixes[id] = ""
-            UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+    func addListConfig(forListId id: String) {
+        if listConfigs[id] == nil {
+            listConfigs[id] = ListConfig()
+            persistConfigs()
         }
     }
 
-    func removePrefix(forListId id: String) {
-        guard listPrefixes[id] != nil else { return }
-        listPrefixes.removeValue(forKey: id)
-        UserDefaults.standard.set(listPrefixes, forKey: listPrefixesKey)
+    /// Auto-add called from `TimerState.attach(task:)` so the user
+    /// builds up their billing config simply by tracking time. No-op
+    /// if already configured. Logs the addition once so it's traceable
+    /// in the sidebar.
+    func ensureListTracked(_ id: String?, listName: String?) {
+        guard let id, listConfigs[id] == nil else { return }
+        listConfigs[id] = ListConfig()
+        persistConfigs()
+        LogStore.shared.info(
+            "🏷  Liste « \(listName ?? id) » ajoutée à la table des préfixes (facturable par défaut)"
+        )
+    }
+
+    /// Updates the billable flag for a list and persists it. Returns
+    /// the new value so call sites can chain (e.g. log "→ facturable").
+    @discardableResult
+    func setBillable(_ value: Bool, forListId id: String) -> Bool {
+        var cfg = listConfigs[id] ?? ListConfig()
+        cfg.billable = value
+        listConfigs[id] = cfg
+        persistConfigs()
+        return value
+    }
+
+    func removeListConfig(forListId id: String) {
+        guard listConfigs[id] != nil else { return }
+        listConfigs.removeValue(forKey: id)
+        persistConfigs()
     }
 
     func prefix(forListId id: String?) -> String? {
-        guard let id, let p = listPrefixes[id], !p.isEmpty else { return nil }
-        return p
+        guard let id, let cfg = listConfigs[id], !cfg.prefix.isEmpty
+        else { return nil }
+        return cfg.prefix
+    }
+
+    /// Resolved billable for a list. Nil when the list isn't tracked
+    /// yet, so callers can decide whether to omit the field rather
+    /// than force a default (the API treats absent vs. false
+    /// differently on some endpoints).
+    func billable(forListId id: String?) -> Bool? {
+        guard let id, let cfg = listConfigs[id] else { return nil }
+        return cfg.billable
     }
 
     func setSearchListFilter(_ id: String?) {
@@ -919,6 +992,43 @@ final class ClickUpService: ObservableObject {
 
     // MARK: - Time entries
 
+    /// Looks up the most recent past time entry on `taskId` and returns
+    /// its `billable` flag. Used at start/attach to carry the user's
+    /// previous facturable choice forward — if a task was previously
+    /// billable on ClickUp (set via web/mobile or our own UI), the next
+    /// entry started here defaults to the same value. Returns nil when
+    /// the task has no prior entries (caller falls back to list config).
+    ///
+    /// ClickUp's `/team/{id}/time_entries` returns the authenticated
+    /// user's entries from the past 30 days by default — that's a
+    /// reasonable window for "what did I do last time on this task".
+    func lastBillable(forTaskId taskId: String) async -> Bool? {
+        await ensureTeam()
+        guard let team = self.teamId else { return nil }
+        do {
+            let resp = try await fetch(
+                path: "/team/\(team)/time_entries?task_id=\(taskId)",
+                as: TimeEntriesQueryResponse.self
+            )
+            let entries = resp.data ?? []
+            // Sort newest-first; the API doesn't guarantee order.
+            let mostRecent = entries
+                .sorted {
+                    ($0.start?.asInt64 ?? 0) > ($1.start?.asInt64 ?? 0)
+                }
+                .first
+            guard let billable = mostRecent?.billable else { return nil }
+            LogStore.shared.info(
+                "💲 Task \(taskId) — entry précédente \(billable ? "facturable" : "non facturable") → hérité"
+            )
+            return billable
+        } catch {
+            // Silent fallback — billable resolution degrades to the
+            // list config and finally to the API default.
+            return nil
+        }
+    }
+
     /// Polls ClickUp for the currently running time entry (if any).
     /// Returns nil when nothing is running on the server.
     func currentRunningEntry() async -> RunningEntry? {
@@ -953,10 +1063,15 @@ final class ClickUpService: ObservableObject {
 
     /// Starts a time entry on ClickUp. `taskId` is optional — passing
     /// nil starts a taskless ("no task") entry which can later get a
-    /// task attached via `updateTimeEntryTask`.
+    /// task attached via `updateTimeEntryTask`. `billable` is also
+    /// optional: nil means "don't send the field" (ClickUp keeps its
+    /// own default), `true/false` forces it. The attach path patches
+    /// it later once we know the task's list.
     /// Returns the new entry id when the API succeeds.
     @discardableResult
-    func startTimeEntry(taskId: String?) async -> String? {
+    func startTimeEntry(
+        taskId: String?, billable: Bool? = nil
+    ) async -> String? {
         await ensureTeam()
         guard let team = self.teamId else {
             LogStore.shared.warn("⚠ start: team_id manquant — appel ignoré")
@@ -964,10 +1079,12 @@ final class ClickUpService: ObservableObject {
         }
         var body: [String: Any] = [:]
         if let taskId { body["tid"] = taskId }
+        if let billable { body["billable"] = billable }
+        let billableTag = billable.map { $0 ? " billable=true" : " billable=false" } ?? ""
         LogStore.shared.info(
             taskId == nil
-                ? "▶ POST /time_entries/start (sans tâche)"
-                : "▶ POST /time_entries/start tid=\(taskId!)"
+                ? "▶ POST /time_entries/start (sans tâche)\(billableTag)"
+                : "▶ POST /time_entries/start tid=\(taskId!)\(billableTag)"
         )
         do {
             let data = try await post(
@@ -991,19 +1108,28 @@ final class ClickUpService: ObservableObject {
     }
 
     /// Attaches a task to an existing (running or stopped) time entry.
-    func updateTimeEntryTask(entryId: String, taskId: String) async {
+    /// When `billable` is provided it's patched in the same PUT, which
+    /// is what catches the "play first, pick task later" flow: the
+    /// initial start went out without a billable hint, and we resolve
+    /// it here from the now-known list config.
+    func updateTimeEntryTask(
+        entryId: String, taskId: String, billable: Bool? = nil
+    ) async {
         await ensureTeam()
         guard let team = self.teamId else {
             LogStore.shared.warn("⚠ attach task: team_id manquant — ignoré")
             return
         }
+        var body: [String: Any] = ["tid": taskId]
+        if let billable { body["billable"] = billable }
+        let billableTag = billable.map { $0 ? " + billable=true" : " + billable=false" } ?? ""
         LogStore.shared.info(
-            "✎ PUT tid=\(taskId) sur l'entry \(entryId)"
+            "✎ PUT tid=\(taskId)\(billableTag) sur l'entry \(entryId)"
         )
         do {
             _ = try await put(
                 path: "/team/\(team)/time_entries/\(entryId)",
-                body: ["tid": taskId]
+                body: body
             )
             LogStore.shared.info("✓ Tâche associée à la time entry")
         } catch {
