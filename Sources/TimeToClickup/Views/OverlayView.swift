@@ -12,6 +12,7 @@ struct OverlayView: View {
     @EnvironmentObject var descCtl: DescriptionController
     @EnvironmentObject var calendar: CalendarSyncCoordinator
     @EnvironmentObject var idleAlert: IdleAlertState
+    @ObservedObject private var google = GoogleAuthService.shared
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -253,7 +254,7 @@ struct OverlayView: View {
     private var calendarButton: some View {
         CalendarPillButton(
             active: calendar.enabled,
-            connected: GoogleAuthService.shared.isConnected,
+            connected: google.isConnected,
             inProgress: calendar.hasActiveEvent
         ) {
             calendar.toggle()
@@ -555,7 +556,7 @@ private struct CalendarPillButton: View {
     }
 
     private var tint: Color {
-        if !connected { return .secondary }
+        if !connected { return .red }
         if active { return .accentColor }
         return .primary.opacity(0.85)
     }
@@ -572,6 +573,17 @@ private struct CalendarPillButton: View {
         return "Activer la sync Google Calendar"
     }
 
+    private var borderColor: Color {
+        if !connected { return Color.red.opacity(0.9) }
+        if active { return Color.accentColor.opacity(0.55) }
+        return Color.white.opacity(hovering ? 0.22 : 0.12)
+    }
+
+    private var borderWidth: CGFloat {
+        if !connected { return 1.2 }
+        return active ? 1 : 0.5
+    }
+
     var body: some View {
         Button(action: action) {
             ZStack(alignment: .topTrailing) {
@@ -581,15 +593,19 @@ private struct CalendarPillButton: View {
                     .frame(width: 26, height: 26)
                     .background(Circle().fill(.thickMaterial))
                     .overlay(
-                        Circle().strokeBorder(
-                            active
-                                ? Color.accentColor.opacity(0.55)
-                                : Color.white.opacity(hovering ? 0.22 : 0.12),
-                            lineWidth: active ? 1 : 0.5
-                        )
+                        Circle().strokeBorder(borderColor, lineWidth: borderWidth)
                     )
 
-                if inProgress {
+                if !connected {
+                    // Red exclamation badge — extra visual cue beyond the
+                    // SF Symbol's built-in exclamation mark, so it reads
+                    // even at the overlay's small size.
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.red)
+                        .background(Circle().fill(.white))
+                        .offset(x: 2, y: -2)
+                } else if inProgress {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 6, height: 6)
@@ -921,16 +937,28 @@ private struct EndOfDayAlertPill: View {
 
     private static let accent = Color(red: 1.0, green: 0.28, blue: 0.30)
 
+    private var iconName: String {
+        idleAlert.endOfDayKind == .lunch
+            ? "fork.knife"
+            : "moon.stars.fill"
+    }
+
+    private var alertText: String {
+        idleAlert.endOfDayKind == .lunch
+            ? "Pause déjeuner — pense au timer"
+            : "Fin de journée — pense au timer"
+    }
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
 
         return HStack(spacing: 10) {
-            Image(systemName: "moon.stars.fill")
+            Image(systemName: iconName)
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Self.accent)
                 .shadow(color: Self.accent.opacity(0.55), radius: 4)
 
-            Text("Fin de journée — pense au timer")
+            Text(alertText)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)

@@ -264,6 +264,12 @@ final class ClickUpService: ObservableObject {
     /// Fetch the workspace tree (spaces + their folders) for the
     /// settings UI. We don't go down to lists — the whitelist works at
     /// the space / folder level only.
+    ///
+    /// Each space's folder + folderless-list endpoints are fetched in
+    /// a `TaskGroup` so spaces resolve in parallel, and `availableSpaces`
+    /// is populated incrementally as each one finishes — the settings
+    /// UI fills in progressively instead of waiting for the slowest
+    /// space to gate the whole render.
     func loadAllSpaces() async {
         await ensureTeam()
         guard let teamId else { return }
@@ -276,48 +282,69 @@ final class ClickUpService: ObservableObject {
                 as: SpacesResponse.self
             )
             LogStore.shared.info("\(spacesResp.spaces.count) espace(s) trouvés")
-            var spaces: [ClickUpSpace] = []
-            for s in spacesResp.spaces {
-                async let folders = fetch(
-                    path: "/space/\(s.id)/folder?archived=false",
-                    as: FoldersResponse.self
-                )
-                async let folderless = fetch(
-                    path: "/space/\(s.id)/list?archived=false",
-                    as: ListsResponse.self
-                )
-                let foldersResp = (try? await folders)?.folders ?? []
-                let folderlessResp = (try? await folderless)?.lists ?? []
 
-                let parsedFolders = foldersResp.map { f in
-                    ClickUpFolder(
-                        id: f.id,
-                        name: f.name,
-                        lists: f.lists.map {
-                            ClickUpList(id: $0.id, name: $0.name)
-                        }
-                    )
+            // Reset and refill incrementally, kept sorted as we go.
+            availableSpaces = []
+            await withTaskGroup(of: ClickUpSpace?.self) { group in
+                for s in spacesResp.spaces {
+                    group.addTask { [weak self] in
+                        await self?.loadSpaceContents(s)
+                    }
                 }
-                let parsedLists = folderlessResp.map {
-                    ClickUpList(id: $0.id, name: $0.name)
+                for await space in group {
+                    guard let space else { continue }
+                    var current = availableSpaces
+                    current.append(space)
+                    current.sort { $0.name < $1.name }
+                    availableSpaces = current
                 }
-                let totalLists = parsedFolders.reduce(0) { $0 + $1.listIds.count }
-                LogStore.shared.info(
-                    "  • « \(s.name) » : \(parsedFolders.count) sous-espace(s), " +
-                    "\(parsedLists.count) liste(s) hors-folder, " +
-                    "\(totalLists + parsedLists.count) liste(s) au total"
-                )
-                spaces.append(ClickUpSpace(
-                    id: s.id, name: s.name,
-                    folders: parsedFolders,
-                    folderlessLists: parsedLists
-                ))
             }
-            availableSpaces = spaces.sorted { $0.name < $1.name }
             lastError = nil
         } catch {
             report("spaces", error)
         }
+    }
+
+    /// Fetches a single space's folders + folderless lists in parallel.
+    /// Failure of either call is logged but doesn't drop the space —
+    /// we still include it with whatever data resolved.
+    private func loadSpaceContents(
+        _ s: SpacesResponse.Raw
+    ) async -> ClickUpSpace {
+        async let folders = try? fetch(
+            path: "/space/\(s.id)/folder?archived=false",
+            as: FoldersResponse.self
+        )
+        async let folderless = try? fetch(
+            path: "/space/\(s.id)/list?archived=false",
+            as: ListsResponse.self
+        )
+        let foldersResp = (await folders)?.folders ?? []
+        let folderlessResp = (await folderless)?.lists ?? []
+
+        let parsedFolders = foldersResp.map { f in
+            ClickUpFolder(
+                id: f.id,
+                name: f.name,
+                lists: f.lists.map {
+                    ClickUpList(id: $0.id, name: $0.name)
+                }
+            )
+        }
+        let parsedLists = folderlessResp.map {
+            ClickUpList(id: $0.id, name: $0.name)
+        }
+        let totalLists = parsedFolders.reduce(0) { $0 + $1.listIds.count }
+        LogStore.shared.info(
+            "  • « \(s.name) » : \(parsedFolders.count) sous-espace(s), " +
+            "\(parsedLists.count) liste(s) hors-folder, " +
+            "\(totalLists + parsedLists.count) liste(s) au total"
+        )
+        return ClickUpSpace(
+            id: s.id, name: s.name,
+            folders: parsedFolders,
+            folderlessLists: parsedLists
+        )
     }
 
     // MARK: - Search
@@ -523,6 +550,91 @@ final class ClickUpService: ObservableObject {
             if resp.tasks.count < 100 { break }
         }
         return all
+    }
+
+    /// Detects a ClickUp task identifier in arbitrary user input. Matches:
+    ///   - URLs containing `/t/<id>` (any host, e.g. `app.clickup.com/t/abc123`,
+    ///     `app.clickup.com/{teamId}/v/li/.../t/abc123`)
+    ///   - Bare custom ids like `CU-12345`, `PROJ-456` (uppercase prefix + dash + digits)
+    /// Returns the extracted id and whether it's a custom id (which
+    /// requires `?custom_task_ids=true&team_id=...` on the API call).
+    static func parseTaskIdentifier(_ input: String) -> (id: String, isCustom: Bool)? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let range = trimmed.range(
+            of: #"/t/([A-Za-z0-9_-]+)"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            let captured = String(trimmed[range])
+                .replacingOccurrences(
+                    of: "/t/", with: "",
+                    options: .caseInsensitive
+                )
+            // Custom ids contain a dash + digits suffix; native ids are
+            // pure lowercase alphanumeric.
+            let isCustom = captured.range(
+                of: #"^[A-Za-z][A-Za-z0-9]*-[0-9]+$"#,
+                options: .regularExpression
+            ) != nil
+            return (captured, isCustom)
+        }
+
+        if trimmed.range(
+            of: #"^[A-Z][A-Z0-9]*-[0-9]+$"#,
+            options: .regularExpression
+        ) != nil {
+            return (trimmed, true)
+        }
+
+        return nil
+    }
+
+    /// Fetches a single task by id parsed out of a pasted URL or a
+    /// custom id like `CU-12345`. Bypasses every workspace whitelist,
+    /// list filter, and substring search — useful when the normal
+    /// search drops a task ClickUp won't surface via `name=`. Returns
+    /// nil when the input doesn't look like a task identifier or the
+    /// API call fails.
+    func fetchTask(byUrlOrId input: String) async -> ClickUpTask? {
+        guard let parsed = Self.parseTaskIdentifier(input) else { return nil }
+        await ensureTeam()
+
+        var components = URLComponents(
+            string: "https://api.clickup.com/api/v2/task/\(parsed.id)"
+        )!
+        if parsed.isCustom {
+            var items: [URLQueryItem] = [
+                URLQueryItem(name: "custom_task_ids", value: "true")
+            ]
+            if let teamId {
+                items.append(URLQueryItem(name: "team_id", value: teamId))
+            }
+            components.queryItems = items
+        }
+        guard let url = components.url else { return nil }
+
+        LogStore.shared.info(
+            "→ Fetch direct par URL/ID : \(parsed.id)" +
+            (parsed.isCustom ? " (custom_id)" : "")
+        )
+        do {
+            let raw = try await fetchURL(url, as: TasksResponse.RawTask.self)
+            let pathLabel = raw.path.isEmpty ? "?" : raw.path
+            LogStore.shared.info(
+                "✓ Tâche trouvée : \(raw.name) [\(pathLabel)]"
+            )
+            lastError = nil
+            return raw.asTask
+        } catch {
+            if !Self.isCancellation(error) {
+                LogStore.shared.error(
+                    "Fetch direct échoué : \(error.localizedDescription)"
+                )
+                report("fetch by url", error)
+            }
+            return nil
+        }
     }
 
     /// Fetches a specific task by id (parsed from a URL or raw id)

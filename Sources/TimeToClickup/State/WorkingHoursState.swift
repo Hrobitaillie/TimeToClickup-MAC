@@ -178,8 +178,7 @@ final class WorkingHoursState: ObservableObject {
     }
 
     /// End of today's work day, or nil if today is off / hours are
-    /// globally disabled. Used by `IdleAlertState` to decide when to
-    /// raise the red "fin de journée" alert.
+    /// globally disabled.
     var endOfDayToday: Date? {
         guard enabled else { return nil }
         let weekdayInt = Calendar.current.component(.weekday, from: Date())
@@ -188,6 +187,44 @@ final class WorkingHoursState: ObservableObject {
               schedule.enabled
         else { return nil }
         return schedule.afternoonEnd.dateOnToday()
+    }
+
+    /// Distinguishes the two stop-the-timer moments so the alert pill
+    /// can show the right message ("pause déjeuner" vs "fin de journée").
+    enum HalfDayKind: Equatable {
+        case lunch
+        case endOfDay
+    }
+
+    /// Returns the most recent half-day boundary the user has crossed
+    /// today when a "stop the timer" alert is warranted, or nil if
+    /// not yet:
+    ///   - Past `afternoonEnd` → `(afternoonEnd, .endOfDay)`
+    ///   - Between `morningEnd` and `afternoonStart` (lunch break) →
+    ///     `(morningEnd, .lunch)`
+    ///   - Otherwise → nil
+    /// The lunch alert auto-clears once the afternoon block starts so
+    /// the user isn't pestered through their working afternoon.
+    var pastHalfDayEnd: (boundary: Date, kind: HalfDayKind)? {
+        guard enabled else { return nil }
+        let weekdayInt = Calendar.current.component(.weekday, from: Date())
+        guard let weekday = Weekday(rawValue: weekdayInt),
+              let schedule = schedules[weekday],
+              schedule.enabled
+        else { return nil }
+
+        let now = Date()
+        let morningEnd = schedule.morningEnd.dateOnToday()
+        let afternoonStart = schedule.afternoonStart.dateOnToday()
+        let afternoonEnd = schedule.afternoonEnd.dateOnToday()
+
+        if now >= afternoonEnd {
+            return (afternoonEnd, .endOfDay)
+        }
+        if now >= morningEnd && now < afternoonStart {
+            return (morningEnd, .lunch)
+        }
+        return nil
     }
 
     private func persist() {

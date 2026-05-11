@@ -198,14 +198,24 @@ struct TaskSearchView: View {
 
     // MARK: - Search field (rounded, with focus ring)
 
+    private var isUrlMode: Bool {
+        ClickUpService.parseTaskIdentifier(query) != nil
+    }
+
     private var searchField: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
+            Image(systemName: isUrlMode ? "link" : "magnifyingglass")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(fieldFocused ? Color.accentColor : .secondary)
+                .foregroundStyle(
+                    isUrlMode
+                        ? Color.accentColor
+                        : (fieldFocused ? Color.accentColor : .secondary)
+                )
                 .animation(.easeOut(duration: 0.18), value: fieldFocused)
+                .animation(.easeOut(duration: 0.18), value: isUrlMode)
 
-            TextField("Rechercher une tâche…", text: $query)
+            TextField("Rechercher une tâche ou coller une URL ClickUp…",
+                      text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($focused)
@@ -269,7 +279,23 @@ struct TaskSearchView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if !query.isEmpty, let listName = clickup.searchListFilterDisplayName {
+        if isUrlMode {
+            VStack(spacing: 10) {
+                Image(systemName: "link.badge.plus")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.orange)
+                Text("Tâche introuvable")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text("Vérifie que tu as accès à cette tâche dans ClickUp, ou que l'URL/ID est correct.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 32)
+        } else if !query.isEmpty, let listName = clickup.searchListFilterDisplayName {
             // The list filter is the most likely reason for an empty
             // search — surface a one-click escape hatch.
             VStack(spacing: 10) {
@@ -388,6 +414,24 @@ struct TaskSearchView: View {
             loading = false
             return
         }
+
+        // Pasted ClickUp URL or custom id — bypass every filter and
+        // fetch the task directly via `GET /task/{id}`. Skips the
+        // 220 ms debounce since the input is fully formed once
+        // pasted (no point waiting for more keystrokes).
+        if ClickUpService.parseTaskIdentifier(trimmed) != nil {
+            loading = true
+            searchTask = Task {
+                let task = await clickup.fetchTask(byUrlOrId: trimmed)
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    self.results = task.map { [$0] } ?? []
+                    self.loading = false
+                }
+            }
+            return
+        }
+
         loading = true
         searchTask = Task {
             try? await Task.sleep(nanoseconds: 220_000_000)

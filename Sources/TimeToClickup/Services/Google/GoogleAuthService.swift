@@ -165,11 +165,25 @@ final class GoogleAuthService: ObservableObject {
               let cid = clientId, let secret = clientSecret else {
             throw AuthError.notConnected
         }
-        let tokens = try await refreshAccessToken(
-            refresh: refresh, clientId: cid, clientSecret: secret
-        )
-        saveTokens(tokens, keepingRefresh: refresh)
-        return tokens.accessToken
+        do {
+            let tokens = try await refreshAccessToken(
+                refresh: refresh, clientId: cid, clientSecret: secret
+            )
+            saveTokens(tokens, keepingRefresh: refresh)
+            return tokens.accessToken
+        } catch AuthError.refreshTokenRevoked {
+            // Google has revoked the refresh token (typical for unverified
+            // OAuth apps after ~7 days, or when the user pulled access from
+            // their account). Wipe the dead session so the UI reflects
+            // reality and surface a clear message instead of looping on
+            // failed refreshes.
+            disconnect()
+            lastError = "Session Google expirée — reconnecte-toi dans Réglages."
+            LogStore.shared.error(
+                "Google: refresh token révoqué — déconnexion automatique"
+            )
+            throw AuthError.refreshTokenRevoked
+        }
     }
 
     // MARK: - Token plumbing
@@ -225,10 +239,27 @@ final class GoogleAuthService: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw AuthError.tokenRequestFailed(String(body.prefix(200)))
+            let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            // Google returns 400 + {"error":"invalid_grant"} when the
+            // refresh token has been revoked or expired — distinct from
+            // a transient network/server failure.
+            if let parsed = try? JSONDecoder().decode(
+                OAuthErrorResponse.self, from: data
+            ), parsed.error == "invalid_grant" {
+                throw AuthError.refreshTokenRevoked
+            }
+            throw AuthError.tokenRequestFailed(String(bodyStr.prefix(200)))
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)
+    }
+
+    private struct OAuthErrorResponse: Decodable {
+        let error: String
+        let errorDescription: String?
+        enum CodingKeys: String, CodingKey {
+            case error
+            case errorDescription = "error_description"
+        }
     }
 
     private func fetchUserEmail(token: String) async throws -> String {
@@ -275,6 +306,7 @@ final class GoogleAuthService: ObservableObject {
         case invalidURL
         case notConnected
         case tokenRequestFailed(String)
+        case refreshTokenRevoked
         case deniedByUser(String)
         case timeout
 
@@ -288,6 +320,8 @@ final class GoogleAuthService: ObservableObject {
                 return "Pas connecté à Google"
             case .tokenRequestFailed(let msg):
                 return "Échec token: \(msg)"
+            case .refreshTokenRevoked:
+                return "Session Google expirée — reconnecte-toi"
             case .deniedByUser(let err):
                 return "Autorisation refusée: \(err)"
             case .timeout:

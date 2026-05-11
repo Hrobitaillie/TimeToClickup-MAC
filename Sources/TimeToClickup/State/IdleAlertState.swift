@@ -11,10 +11,14 @@ final class IdleAlertState: ObservableObject {
     /// True when the "you forgot the timer" yellow alert is shown.
     @Published private(set) var isAlertActive = false
 
-    /// True when the "end of day, stop the timer" red alert is shown.
-    /// Triggered when a timer is still running past the user's
-    /// configured end of day (see `WorkingHoursState`).
+    /// True when the red "stop the timer" alert is shown — either at
+    /// lunch (morning end → afternoon start) or after the configured
+    /// afternoon end. See `WorkingHoursState.pastHalfDayEnd`.
     @Published private(set) var isEndOfDayAlertActive = false
+
+    /// Which half-day boundary the alert reflects, so the pill can
+    /// surface the right copy ("Pause déjeuner" vs "Fin de journée").
+    @Published private(set) var endOfDayKind: WorkingHoursState.HalfDayKind?
 
     /// Snooze persists across launches so closing/reopening the app
     /// doesn't surprise the user with an immediate alert.
@@ -78,7 +82,12 @@ final class IdleAlertState: ObservableObject {
                     self.clearSnooze()
                     self.isAlertActive = false
                 } else {
-                    self.recompute()
+                    // `@Published` fires in `willSet` — at this point
+                    // `TimerState.shared.isRunning` still reads `true`,
+                    // so calling `recompute()` synchronously would
+                    // re-arm the EOD alert instead of clearing it.
+                    // Defer one runloop tick so it sees the new value.
+                    Task { @MainActor [weak self] in self?.recompute() }
                 }
             }
             .store(in: &cancellables)
@@ -131,9 +140,10 @@ final class IdleAlertState: ObservableObject {
         // Guard: timer must be running, today must be a working day,
         // and the global hours toggle must be on.
         guard TimerState.shared.isRunning,
-              let endOfDay = hours.endOfDayToday
+              let crossed = hours.pastHalfDayEnd
         else {
             if isEndOfDayAlertActive { isEndOfDayAlertActive = false }
+            if endOfDayKind != nil { endOfDayKind = nil }
             return
         }
 
@@ -143,8 +153,8 @@ final class IdleAlertState: ObservableObject {
         }
         if endOfDaySnoozedUntil != nil { clearEndOfDaySnooze() }
 
-        let past = Date() >= endOfDay
-        if past != isEndOfDayAlertActive { isEndOfDayAlertActive = past }
+        if !isEndOfDayAlertActive { isEndOfDayAlertActive = true }
+        if endOfDayKind != crossed.kind { endOfDayKind = crossed.kind }
     }
 
     // MARK: - Snooze

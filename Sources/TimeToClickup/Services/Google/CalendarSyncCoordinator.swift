@@ -65,17 +65,23 @@ final class CalendarSyncCoordinator: ObservableObject {
 
     func timerInfoDidChange() {
         guard let id = activeEventId else { return }
+        guard GoogleAuthService.shared.isConnected else {
+            handleAuthLost()
+            return
+        }
         let summary = runningSummary(for: TimerState.shared.currentTask)
         let description = currentDescription()
         LogStore.shared.info("📅 → PATCH event « \(summary) »")
         if !description.isEmpty {
             LogStore.shared.info("    description: \(description.prefix(200))")
         }
-        Task {
+        Task { [weak self] in
             do {
                 try await GoogleCalendarService.shared.patchEvent(
                     id: id, summary: summary, description: description
                 )
+            } catch GoogleAuthService.AuthError.refreshTokenRevoked {
+                self?.handleAuthLost()
             } catch {
                 LogStore.shared.error(
                     "Calendar update: \(error.localizedDescription)"
@@ -88,6 +94,10 @@ final class CalendarSyncCoordinator: ObservableObject {
 
     private func createEventForCurrentTimer() async {
         guard activeEventId == nil else { return }
+        guard GoogleAuthService.shared.isConnected else {
+            handleAuthLost()
+            return
+        }
         let timer = TimerState.shared
         guard timer.isRunning, let started = timer.startTime else { return }
 
@@ -131,6 +141,8 @@ final class CalendarSyncCoordinator: ObservableObject {
                     description: latestDescription
                 )
             }
+        } catch GoogleAuthService.AuthError.refreshTokenRevoked {
+            handleAuthLost()
         } catch {
             LogStore.shared.error(
                 "Calendar create: \(error.localizedDescription)"
@@ -140,17 +152,37 @@ final class CalendarSyncCoordinator: ObservableObject {
 
     private func extendActiveEvent() async {
         guard let id = activeEventId else { return }
+        guard GoogleAuthService.shared.isConnected else {
+            handleAuthLost()
+            return
+        }
         let endTime = Date().addingTimeInterval(lookahead)
         do {
             try await GoogleCalendarService.shared.patchEvent(
                 id: id, end: endTime
             )
             LogStore.shared.info("📅 Event prolongé (+15 min)")
+        } catch GoogleAuthService.AuthError.refreshTokenRevoked {
+            handleAuthLost()
         } catch {
             LogStore.shared.error(
                 "Calendar extend: \(error.localizedDescription)"
             )
         }
+    }
+
+    /// Drops the in-flight event tracking once Google auth dies. We
+    /// can't finalize the event (no token), but we stop the 15-min
+    /// extend timer so the log stops spamming refresh failures.
+    private func handleAuthLost() {
+        guard activeEventId != nil || extendTimer != nil else { return }
+        activeEventId = nil
+        hasActiveEvent = false
+        extendTimer?.invalidate()
+        extendTimer = nil
+        LogStore.shared.warn(
+            "📅 Sync calendrier suspendue — session Google expirée"
+        )
     }
 
     /// Synchronous capture, then async PATCH. Resets local state
