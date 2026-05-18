@@ -53,14 +53,48 @@ struct OverlayView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .padding(.top, 2)
             } else {
-                pill
-                    .frame(width: OverlayPanel.normalSize.width, height: 44, alignment: .top)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 1)
+                VStack(spacing: 3) {
+                    pill
+                        .frame(width: OverlayPanel.normalSize.width, height: 44, alignment: .top)
+                    if showCalendarDisconnectedBanner {
+                        CalendarDisconnectedBanner(
+                            isReconnecting: google.isAuthorizing,
+                            onReconnect: reconnectGoogle
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 1)
+                .animation(.easeOut(duration: 0.2), value: showCalendarDisconnectedBanner)
             }
         }
         .sheet(isPresented: $showBackdateSheet) {
             CustomBackdateSheet(timer: timer, isPresented: $showBackdateSheet)
+        }
+    }
+
+    /// Show a "Agenda déconnecté" banner under the pill when the user
+    /// has Calendar sync enabled but Google is no longer reachable
+    /// (typically after an `invalid_grant` auto-disconnect). Gated on
+    /// `hasEverConnected` so first-time users who never set up sync
+    /// don't see this — the flag is sticky across `disconnect()`, so
+    /// the banner reappears next launch if the session goes stale.
+    private var showCalendarDisconnectedBanner: Bool {
+        calendar.enabled
+            && google.hasEverConnected
+            && !google.isConnected
+    }
+
+    private func reconnectGoogle() {
+        google.lastError = nil
+        Task {
+            do { try await google.connect() }
+            catch {
+                if !(error is CancellationError) {
+                    google.lastError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -751,6 +785,97 @@ private struct SearchPillButton: View {
                     ) { pressed = false }
                 }
         )
+    }
+}
+
+// MARK: - "Agenda déconnecté" banner
+
+/// Slim pill that sits just under the timer overlay when Calendar sync
+/// is on but the Google session has gone away (typically after an
+/// `invalid_grant` auto-disconnect). The trailing icon button kicks off
+/// the OAuth flow inline so the user doesn't have to open Settings.
+private struct CalendarDisconnectedBanner: View {
+    let isReconnecting: Bool
+    let onReconnect: () -> Void
+    @State private var hovering = false
+    @State private var pressed = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color.red.opacity(0.9))
+
+            Text("Agenda déconnecté")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.primary.opacity(0.9))
+                .lineLimit(1)
+
+            Button(action: onReconnect) {
+                Group {
+                    if isReconnecting {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.65)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "link")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle().fill(LinearGradient(
+                        colors: [
+                            Color(red: 0.95, green: 0.30, blue: 0.32),
+                            Color(red: 0.78, green: 0.20, blue: 0.24)
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    ))
+                )
+                .overlay(
+                    Circle().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
+                )
+                .scaleEffect(pressed ? 0.92 : (hovering ? 1.06 : 1.0))
+                .shadow(
+                    color: Color.red.opacity(hovering ? 0.45 : 0.28),
+                    radius: hovering ? 5 : 3, y: 1
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isReconnecting)
+            .help(isReconnecting
+                  ? "Connexion à Google en cours…"
+                  : "Reconnecter Google Calendar")
+            .accessibilityLabel("Reconnecter Google Calendar")
+            .onHover { v in
+                withAnimation(.easeOut(duration: 0.15)) { hovering = v }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !pressed {
+                            withAnimation(.easeOut(duration: 0.08)) { pressed = true }
+                        }
+                    }
+                    .onEnded { _ in
+                        withAnimation(
+                            .interactiveSpring(response: 0.25, dampingFraction: 0.6)
+                        ) { pressed = false }
+                    }
+            )
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(
+            Capsule(style: .continuous).fill(.ultraThinMaterial)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color.red.opacity(0.45), lineWidth: 0.7)
+        )
+        .shadow(color: Color.red.opacity(0.18), radius: 3, y: 1)
     }
 }
 

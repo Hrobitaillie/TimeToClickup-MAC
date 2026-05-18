@@ -22,6 +22,10 @@ final class GoogleAuthService: ObservableObject {
     private let refreshTokenKey  = "google_refresh_token"
     private let expiryKey        = "google_token_expiry"
     private let emailKey         = "google_email"
+    /// Sticky flag — set once on first successful connect, never
+    /// cleared by `disconnect()`. Lets the UI show "reconnect" prompts
+    /// only to users who actually used Calendar sync at some point.
+    private let everConnectedKey = "google_ever_connected"
 
     private static let scopes = [
         "https://www.googleapis.com/auth/calendar.events",
@@ -46,6 +50,12 @@ final class GoogleAuthService: ObservableObject {
         AppCredentials.hasBundledGoogleCredentials
     }
     var isConnected: Bool { connectedEmail != nil }
+    /// True once the user has completed an OAuth flow at least once
+    /// on this machine. Used to gate "reconnect" affordances so we
+    /// don't pester first-time users who never enabled Calendar sync.
+    var hasEverConnected: Bool {
+        UserDefaults.standard.bool(forKey: everConnectedKey)
+    }
 
     private init() {
         connectedEmail = UserDefaults.standard.string(forKey: emailKey)
@@ -148,6 +158,7 @@ final class GoogleAuthService: ObservableObject {
 
         let email = (try? await fetchUserEmail(token: tokens.accessToken)) ?? "Google"
         UserDefaults.standard.set(email, forKey: emailKey)
+        UserDefaults.standard.set(true, forKey: everConnectedKey)
         connectedEmail = email
         LogStore.shared.info("✓ Google connecté : \(email)")
     }
